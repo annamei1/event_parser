@@ -5,6 +5,8 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Event Email Parser</title>
   <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://accounts.google.com/gsi/client" async defer></script>
+  <script src="https://apis.google.com/js/api.js"></script>
 </head>
 <body class="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100">
   <div class="container mx-auto p-4 md:p-6 max-w-6xl">
@@ -18,11 +20,69 @@
         </svg>
         Event Email Parser
       </h1>
-      <p class="text-gray-600 mb-6">Paste email content and AI will extract event details</p>
+      <p class="text-gray-600 mb-6">Connect Gmail to auto-extract events from recent emails, or paste content manually</p>
+
+      <!-- Gmail Integration Section -->
+      <div class="mb-6 p-4 bg-blue-50 border border-blue-200 rounded-lg">
+        <div class="flex items-center justify-between mb-3">
+          <h2 class="text-lg font-semibold text-gray-800 flex items-center gap-2">
+            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"></path>
+              <polyline points="22,6 12,13 2,6"></polyline>
+            </svg>
+            Gmail Integration
+          </h2>
+          <div id="authButtons">
+            <button
+              id="signInBtn"
+              class="px-4 py-2 bg-white border border-gray-300 rounded-lg font-semibold hover:bg-gray-50 flex items-center gap-2 transition-colors text-sm"
+            >
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor">
+                <path d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z" fill="#4285F4"/>
+                <path d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z" fill="#34A853"/>
+                <path d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l2.85-2.22.81-.62z" fill="#FBBC05"/>
+                <path d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z" fill="#EA4335"/>
+              </svg>
+              Sign in with Google
+            </button>
+            <button
+              id="signOutBtn"
+              class="hidden px-4 py-2 bg-gray-600 text-white rounded-lg font-semibold hover:bg-gray-700 transition-colors text-sm"
+            >
+              Sign Out
+            </button>
+          </div>
+        </div>
+        <div id="userInfo" class="hidden mb-1 text-sm text-gray-600"></div>
+        <div id="gmailControls" class="hidden">
+          <button
+            onclick="relinkEmails()"
+            class="mt-2 px-3 py-1.5 bg-indigo-100 text-indigo-700 rounded-lg text-xs font-semibold hover:bg-indigo-200 transition-colors"
+          >
+            Fetch
+          </button>
+        </div>
+      </div>
+
+      <!-- URL fetch section -->
+      <div class="mb-4 flex gap-2">
+        <input
+          id="urlInput"
+          type="url"
+          placeholder="Paste a website URL to extract events from…"
+          class="flex-1 p-3 border-2 border-gray-200 rounded-lg focus:border-indigo-500 focus:outline-none text-sm"
+        />
+        <button
+          id="fetchUrlBtn"
+          class="px-4 py-2 bg-indigo-600 text-white rounded-lg font-semibold hover:bg-indigo-700 disabled:bg-gray-400 disabled:cursor-not-allowed transition-colors text-sm whitespace-nowrap"
+        >
+          Fetch URL
+        </button>
+      </div>
 
       <textarea
         id="emailInput"
-        placeholder="Paste your email content here..."
+        placeholder="Or paste email / page content here…"
         class="w-full h-64 p-4 border-2 border-gray-200 rounded-lg focus:border-indigo-500 focus:outline-none font-mono text-sm resize-y"
       ></textarea>
 
@@ -45,23 +105,440 @@
   </div>
 
   <script>
+    // Configuration
+    const GOOGLE_CLIENT_ID = '557433500490-cbm0sv985n4bopji202fojtvslsmpgol.apps.googleusercontent.com';
+    const GMAIL_SCOPES = 'https://www.googleapis.com/auth/gmail.readonly https://www.googleapis.com/auth/calendar.events';
+
+    // Event scoring: emails must reach a minimum score to be treated as event emails.
+    // Strong phrases score 3 (almost certainly an event invite).
+    // Weak phrases score 1 (could appear in non-event mail, need corroboration).
+    // Subject matches are worth 2× body matches.
+    // Negative signals subtract points (receipts, account notifications, etc.).
+    const STRONG_KEYWORDS = [
+      'rsvp', 'webinar', 'symposium', 'save the date', "you're invited",
+      'join us for', 'seminar', 'conference', 'workshop', 'lecture',
+      'registration is open', 'register now', 'register here',
+      'tickets available', 'reserve your spot', 'reserve your seat',
+      'attend', 'attending', 'free admission', 'open to the public','event', 'talk'
+    ];
+    const WEAK_KEYWORDS = [
+      'meeting', 'presentation', 'session',
+      'invite', 'invitation', 'join us', 'calendar', 'register'
+    ];
+    // Date patterns: "March 15", "15 March", "3/15", "15th", "Tuesday,", etc.
+    const DATE_PATTERN = /\b(\d{1,2}[\/\-]\d{1,2}|\d{1,2}(?:st|nd|rd|th)\b|(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\.?\s+\d{1,2}|\d{1,2}\s+(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*|(?:monday|tuesday|wednesday|thursday|friday|saturday|sunday),?\s+\d)/i;
+    const NEGATIVE_KEYWORDS = [
+      'unsubscribe', 'order confirmation', 'order #', 'receipt', 'invoice',
+      'shipment', 'tracking number', 'your password', 'reset your password',
+      'verify your email', 'confirm your email', 'account created',
+      'payment received', 'subscription renewal', 'auto-renewal',
+      'statement is ready', 'your bill', 'two-factor', 'login attempt',
+      'security alert', 'we noticed', 'sign in to your',
+      'hep-th daily', 'digest'
+    ];
+    const MIN_SCORE = 3;
+
+    // DOM Elements
     const parseBtn = document.getElementById('parseBtn');
     const emailInput = document.getElementById('emailInput');
+    const urlInput = document.getElementById('urlInput');
+    const fetchUrlBtn = document.getElementById('fetchUrlBtn');
     const errorBox = document.getElementById('errorBox');
     const debugBox = document.getElementById('debugBox');
     const eventsContainer = document.getElementById('eventsContainer');
+    const signInBtn = document.getElementById('signInBtn');
+    const signOutBtn = document.getElementById('signOutBtn');
+    const userInfo = document.getElementById('userInfo');
+    const gmailControls = document.getElementById('gmailControls');
+
+    // Gmail state
+    let gapiInitialized = false;
+    let tokenClient;
+    let accessToken = null;
+    let tokenExpiresAt = null;
+
+    // Events state
+    let allEvents = JSON.parse(localStorage.getItem('extractedEvents') || '[]');
+
+    // Track Gmail message IDs that have already been sent to AI processing
+    let processedEmailIds = new Set(JSON.parse(localStorage.getItem('processedEmailIds') || '[]'));
+
+    // Restore saved access token
+    function restoreSavedToken() {
+      const savedToken = localStorage.getItem('gmailAccessToken');
+      const savedExpiry = localStorage.getItem('gmailTokenExpiry');
+
+      if (savedToken && savedExpiry) {
+        const expiryTime = parseInt(savedExpiry);
+        const now = Date.now();
+
+        // Check if token is still valid (with 5 minute buffer)
+        if (expiryTime > now + (5 * 60 * 1000)) {
+          accessToken = savedToken;
+          tokenExpiresAt = expiryTime;
+          // Tell the gapi client to use this token for API calls
+          if (typeof gapi !== 'undefined' && gapi.client) {
+            gapi.client.setToken({ access_token: savedToken });
+          }
+          updateAuthUI(true);
+          return true;
+        } else {
+          // Token expired, clear it
+          clearSavedToken();
+        }
+      }
+      return false;
+    }
+
+    function saveToken(token, expiresIn) {
+      accessToken = token;
+      // expiresIn is in seconds, convert to milliseconds and add to current time
+      tokenExpiresAt = Date.now() + (expiresIn * 1000);
+      // Tell the gapi client to use this token for API calls
+      if (typeof gapi !== 'undefined' && gapi.client) {
+        gapi.client.setToken({ access_token: token });
+      }
+      localStorage.setItem('gmailAccessToken', token);
+      localStorage.setItem('gmailTokenExpiry', tokenExpiresAt.toString());
+    }
+
+    function clearSavedToken() {
+      accessToken = null;
+      tokenExpiresAt = null;
+      if (typeof gapi !== 'undefined' && gapi.client) {
+        gapi.client.setToken(null);
+      }
+      localStorage.removeItem('gmailAccessToken');
+      localStorage.removeItem('gmailTokenExpiry');
+    }
+
+    // Initialize Google API
+    function gapiLoaded() {
+      gapi.load('client', initializeGapiClient);
+    }
+
+    async function initializeGapiClient() {
+      await gapi.client.init({
+        discoveryDocs: [
+          'https://www.googleapis.com/discovery/v1/apis/gmail/v1/rest',
+          'https://www.googleapis.com/discovery/v1/apis/calendar/v3/rest',
+        ],
+      });
+      gapiInitialized = true;
+    }
+
+    function gisLoaded() {
+      tokenClient = google.accounts.oauth2.initTokenClient({
+        client_id: GOOGLE_CLIENT_ID,
+        scope: GMAIL_SCOPES,
+        callback: (response) => {
+          if (response.error) {
+            // Silent re-auth failed (e.g. user revoked access) — just show sign-in button
+            if (response.error !== 'interaction_required' && response.error !== 'user_cancelled') {
+              showError('Failed to authenticate with Google');
+            }
+            clearSavedToken();
+            localStorage.removeItem('gmailUserSignedIn');
+            updateAuthUI(false);
+            return;
+          }
+          saveToken(response.access_token, response.expires_in);
+          localStorage.setItem('gmailUserSignedIn', 'true');
+          updateAuthUI(true);
+          // Auto-fetch 20 most recent emails
+          autoFetchRecentEmails();
+        },
+      });
+    }
+
+    // Sign in/out handlers
+    signInBtn.addEventListener('click', () => {
+      if (!tokenClient) {
+        showError('Google Sign-In not ready yet. Please wait a moment and try again.');
+        return;
+      }
+      tokenClient.requestAccessToken();
+    });
+
+    signOutBtn.addEventListener('click', () => {
+      if (accessToken) google.accounts.oauth2.revoke(accessToken);
+      clearSavedToken();
+      localStorage.removeItem('gmailUserSignedIn');
+      updateAuthUI(false);
+    });
+
+    function updateAuthUI(isSignedIn) {
+      if (isSignedIn) {
+        signInBtn.classList.add('hidden');
+        signOutBtn.classList.remove('hidden');
+        userInfo.classList.remove('hidden');
+        gmailControls.classList.remove('hidden');
+        userInfo.textContent = '✓ Connected to Gmail';
+      } else {
+        signInBtn.classList.remove('hidden');
+        signOutBtn.classList.add('hidden');
+        userInfo.classList.add('hidden');
+        gmailControls.classList.add('hidden');
+      }
+    }
+
+    function gapiError(err) {
+      // GAPI errors are objects like { result: { error: { message } }, status }
+      return err?.result?.error?.message || err?.message || JSON.stringify(err);
+    }
+
+    // Auto-fetch 20 most recent emails
+    async function autoFetchRecentEmails() {
+      if (!accessToken) return;
+
+      // Wait for the GAPI client to finish initialising (it loads asynchronously)
+      if (!gapiInitialized) {
+        await new Promise(resolve => {
+          const poll = setInterval(() => {
+            if (gapiInitialized) { clearInterval(poll); resolve(); }
+          }, 100);
+        });
+      }
+
+      // Ensure the token is set on the gapi client (in case it was restored before gapi loaded)
+      gapi.client.setToken({ access_token: accessToken });
+
+      userInfo.innerHTML = '⏳ Auto-fetching 20 most recent emails...';
+
+      try {
+        const response = await gapi.client.gmail.users.messages.list({
+          userId: 'me',
+          maxResults: 20
+        });
+
+        const messages = response.result.messages || [];
+
+        if (messages.length === 0) {
+          userInfo.innerHTML = '✓ Connected to Gmail (No recent emails found)';
+          return;
+        }
+
+        // Fetch full email details
+        const emailPromises = messages.map(msg =>
+          gapi.client.gmail.users.messages.get({
+            userId: 'me',
+            id: msg.id,
+            format: 'full'
+          })
+        );
+
+        const emailDetails = await Promise.all(emailPromises);
+        const emails = emailDetails.map(e => e.result);
+
+        // Filter by keywords
+        const filteredEmails = filterEmailsByKeywords(emails);
+
+        const unprocessedCount = filteredEmails.filter(email => !processedEmailIds.has(email.id)).length;
+        userInfo.innerHTML = `✓ Connected to Gmail - Found ${filteredEmails.length} potential event emails (${unprocessedCount} new, from ${emails.length} total)`;
+
+        // Skip emails already sent to AI (prevents dismissed events from being re-added)
+        const unprocessedEmails = filteredEmails.filter(email => !processedEmailIds.has(email.id));
+
+        if (unprocessedEmails.length > 0) {
+          await batchProcessEmails(unprocessedEmails);
+        }
+
+      } catch (err) {
+        showError(`Failed to fetch emails: ${gapiError(err)}`);
+        userInfo.innerHTML = '✓ Connected to Gmail';
+      }
+    }
+
+    // Score an email for event likelihood. Returns a numeric score.
+    function scoreEmail(email) {
+      const headers = email.payload.headers;
+      const subject = (headers.find(h => h.name === 'Subject')?.value || '').toLowerCase();
+      const snippet = (email.snippet || '').toLowerCase();
+      const body = extractEmailBody(email).toLowerCase();
+
+      // Only apply negative signals to subject + snippet — NOT the full body.
+      // Most legitimate event invite emails have "unsubscribe" in their footer,
+      // and body text can contain incidental matches (e.g. "sign in to your account").
+      const headerText = `${subject} ${snippet}`;
+      if (NEGATIVE_KEYWORDS.some(kw => headerText.includes(kw))) return 0;
+
+      let score = 0;
+
+      // Strong keywords: worth 3 in subject, 3 in body
+      for (const kw of STRONG_KEYWORDS) {
+        if (subject.includes(kw)) score += 6; // 2× multiplier for subject
+        else if (snippet.includes(kw) || body.includes(kw)) score += 3;
+      }
+
+      // Weak keywords: worth 2 in subject, 1 in body
+      for (const kw of WEAK_KEYWORDS) {
+        if (subject.includes(kw)) score += 2;
+        else if (snippet.includes(kw) || body.includes(kw)) score += 1;
+      }
+
+      // Bonus if a date-like pattern appears in subject or snippet
+      if (DATE_PATTERN.test(subject) || DATE_PATTERN.test(snippet)) score += 2;
+
+      return score;
+    }
+
+    // Filter emails by keywords
+    function filterEmailsByKeywords(emails) {
+      return emails.filter(email => scoreEmail(email) >= MIN_SCORE);
+    }
+
+    // Batch process filtered emails — single API request for all emails
+    const MAX_CHARS_PER_EMAIL = 4000; // ~1000 tokens per email; keeps total well within limits
+
+    async function batchProcessEmails(emails) {
+      const progressDiv = document.createElement('div');
+      progressDiv.className = 'mt-4 p-3 bg-indigo-50 border border-indigo-200 rounded-lg text-sm';
+      progressDiv.innerHTML = `
+        <div class="font-semibold mb-2">Sending ${emails.length} emails to Gemini in one request…</div>
+        <div class="w-full bg-gray-200 rounded-full h-2">
+          <div class="bg-indigo-600 h-2 rounded-full transition-all animate-pulse" style="width: 100%"></div>
+        </div>`;
+      eventsContainer.prepend(progressDiv);
+
+      // Build combined text with numbered sections; track Gmail URL per index
+      const gmailUrls = {}; // 1-based index → Gmail URL
+      const sections = [];
+      emails.forEach((email, i) => {
+        const idx = i + 1;
+        const subject = email.payload.headers.find(h => h.name === 'Subject')?.value || `Email ${idx}`;
+        const body = extractEmailBody(email).slice(0, MAX_CHARS_PER_EMAIL);
+        if (!body) return;
+        gmailUrls[idx] = `https://mail.google.com/mail/u/0/#all/${email.id}`;
+        sections.push(`=== EMAIL ${idx}: ${subject} ===\n${body}`);
+      });
+
+      if (sections.length === 0) {
+        progressDiv.remove();
+        return;
+      }
+
+      const combinedText = sections.join('\n\n');
+
+      // Mark all as processed before the API call so they're never re-sent even if dismissed
+      emails.forEach(email => processedEmailIds.add(email.id));
+      localStorage.setItem('processedEmailIds', JSON.stringify([...processedEmailIds]));
+
+      try {
+        await extractEventsFromText(combinedText, true, gmailUrls);
+      } catch (err) {
+        showError(`Failed to process emails: ${err.message || err}`);
+      }
+
+      progressDiv.remove();
+      displayAllEvents();
+    }
+
+
+    function extractEmailBody(email) {
+      function decode(data) {
+        return atob(data.replace(/-/g, '+').replace(/_/g, '/'));
+      }
+
+      // Recursively search for text content through nested multipart structures.
+      // Returns { text, html } with the best candidates found anywhere in the tree.
+      function findParts(payload) {
+        const result = { text: '', html: '' };
+
+        if (payload.mimeType === 'text/plain' && payload.body?.data) {
+          result.text = decode(payload.body.data);
+          return result;
+        }
+        if (payload.mimeType === 'text/html' && payload.body?.data) {
+          result.html = decode(payload.body.data);
+          return result;
+        }
+
+        for (const part of (payload.parts || [])) {
+          const child = findParts(part);
+          if (child.text) result.text = child.text;
+          if (child.html) result.html = child.html;
+          if (result.text) break; // prefer plain text, stop as soon as we have it
+        }
+
+        return result;
+      }
+
+      const { text, html } = findParts(email.payload);
+      if (text) return text;
+      if (html) return html.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim();
+      return '';
+    }
+
+    // Initialize Google APIs when loaded
+    if (typeof gapi !== 'undefined') {
+      gapiLoaded();
+    }
+    if (typeof google !== 'undefined') {
+      gisLoaded();
+    }
+    window.addEventListener('load', () => {
+      if (typeof gapi !== 'undefined') gapiLoaded();
+      if (typeof google !== 'undefined') {
+        gisLoaded();
+        // Try to restore previous session
+        if (restoreSavedToken()) {
+          // Valid saved token — auto-fetch without any prompt
+          autoFetchRecentEmails();
+        } else if (localStorage.getItem('gmailUserSignedIn') === 'true') {
+          // Token expired but user was previously signed in — try silent re-auth
+          // (no popup shown if Google browser session is still active)
+          tokenClient.requestAccessToken({ prompt: 'none' });
+        }
+      }
+      // Display stored events on load
+      displayAllEvents();
+    });
+
+    fetchUrlBtn.addEventListener('click', async () => {
+      const url = urlInput.value.trim();
+      if (!url) {
+        showError('Please enter a URL first');
+        return;
+      }
+      hideError();
+      fetchUrlBtn.disabled = true;
+      fetchUrlBtn.textContent = 'Fetching…';
+      try {
+        const res = await fetch('/api/fetch-url', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ url })
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || res.statusText);
+        emailInput.value = data.text;
+      } catch (err) {
+        showError(`Failed to fetch URL: ${err.message}`);
+      } finally {
+        fetchUrlBtn.disabled = false;
+        fetchUrlBtn.textContent = 'Fetch URL';
+      }
+    });
 
     parseBtn.addEventListener('click', async () => {
       const emailText = emailInput.value.trim();
-      
+
       if (!emailText) {
         showError('Please paste some email content first');
         return;
       }
 
-      setLoading(true);
-      hideError();
-      hideDebug();
+      await extractEventsFromText(emailText, false);
+      displayAllEvents();
+    });
+
+    // gmailUrls: either null (manual paste), a string (single email), or a {1: url, 2: url, ...} map (batch)
+    async function extractEventsFromText(emailText, silent = false, gmailUrls = null) {
+      if (!silent) {
+        setLoading(true);
+        hideError();
+        hideDebug();
+      }
 
       try {
         // Call our secure backend proxy instead of Gemini API directly
@@ -75,7 +552,9 @@
           })
         });
 
-        showDebug(`Status: ${response.status}, Reading response...`);
+        if (!silent) {
+          showDebug(`Status: ${response.status}, Reading response...`);
+        }
 
         if (!response.ok) {
           const errorData = await response.json();
@@ -87,15 +566,54 @@
         const cleanContent = content.replace(/```json|```/g, '').trim();
         const events = JSON.parse(cleanContent);
 
-        displayEvents(Array.isArray(events) ? events : [events]);
-        hideDebug();
+        const eventArray = (Array.isArray(events) ? events : [events]).filter(e => e.time);
+
+        // Add events to global list
+        eventArray.forEach(event => {
+          // Add unique ID and timestamp
+          event.id = Date.now() + Math.random();
+          event.addedAt = new Date().toISOString();
+          if (gmailUrls) {
+            // If gmailUrls is a map, resolve via sourceEmailIndex returned by the AI
+            event.gmailUrl = typeof gmailUrls === 'object' && !Array.isArray(gmailUrls)
+              ? (gmailUrls[event.sourceEmailIndex] ?? null)
+              : gmailUrls;
+          }
+
+          // Check for duplicates (same title and date)
+          const existing = allEvents.find(e =>
+            e.title === event.title && e.date === event.date
+          );
+
+          if (existing) {
+            // Retroactively add the Gmail link if we now have it
+            if (!existing.gmailUrl && event.gmailUrl) {
+              existing.gmailUrl = event.gmailUrl;
+            }
+          } else {
+            allEvents.push(event);
+          }
+        });
+
+        // Save to localStorage
+        localStorage.setItem('extractedEvents', JSON.stringify(allEvents));
+
+        if (!silent) {
+          displayAllEvents();
+          hideDebug();
+        }
       } catch (err) {
-        showError(`Failed: ${err.message}`);
-        showDebug(`Error: ${err.toString()}`);
+        if (!silent) {
+          showError(`Failed: ${err.message}`);
+          showDebug(`Error: ${err.toString()}`);
+        }
+        throw err;
       } finally {
-        setLoading(false);
+        if (!silent) {
+          setLoading(false);
+        }
       }
-    });
+    }
 
     function setLoading(loading) {
       parseBtn.disabled = loading;
@@ -122,26 +640,49 @@
       debugBox.classList.add('hidden');
     }
 
-    function displayEvents(events) {
-      if (events.length === 0) {
-        eventsContainer.innerHTML = '<p class="text-gray-600">No events found</p>';
+    function displayAllEvents() {
+      // Sort by date (upcoming first)
+      const sortedEvents = [...allEvents].sort((a, b) => {
+        return new Date(a.date) - new Date(b.date);
+      });
+
+      if (sortedEvents.length === 0) {
+        eventsContainer.innerHTML = `
+          <div class="bg-white rounded-xl shadow-lg p-8 text-center">
+            <svg class="mx-auto mb-4 text-gray-400" width="64" height="64" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <rect x="3" y="4" width="18" height="18" rx="2" ry="2"></rect>
+              <line x1="16" y1="2" x2="16" y2="6"></line>
+              <line x1="8" y1="2" x2="8" y2="6"></line>
+              <line x1="3" y1="10" x2="21" y2="10"></line>
+            </svg>
+            <p class="text-gray-600 text-lg">No events found yet</p>
+            <p class="text-gray-500 text-sm mt-2">Sign in and fetch emails to start extracting events</p>
+          </div>
+        `;
         return;
       }
 
       eventsContainer.innerHTML = `
-        <h2 class="text-2xl font-bold text-gray-800 mb-4">Found ${events.length} Event${events.length > 1 ? 's' : ''}</h2>
-        ${events.map(event => `
-          <div class="bg-white rounded-xl shadow-lg p-6 hover:shadow-xl transition-shadow">
+        <div class="bg-white rounded-xl shadow-lg p-6 mb-6">
+          <div class="flex justify-between items-center">
+            <h2 class="text-2xl font-bold text-gray-800">All Events (${sortedEvents.length})</h2>
+            <button onclick="clearAllEvents()" class="px-4 py-2 bg-red-100 text-red-700 rounded-lg font-semibold hover:bg-red-200 transition-colors text-sm">
+              Clear All
+            </button>
+          </div>
+        </div>
+        ${sortedEvents.map(event => `
+          <div class="bg-white rounded-xl shadow-lg p-6 hover:shadow-xl transition-shadow mb-4" id="event-${event.id}">
             <div class="flex flex-col md:flex-row md:justify-between md:items-start gap-4 mb-4">
               <h3 class="text-xl font-bold text-gray-800">${event.title}</h3>
               <div class="flex flex-wrap gap-2">
-                <button onclick="addToGoogleCalendar(${JSON.stringify(event).replace(/"/g, '&quot;')})" class="px-4 py-2 bg-blue-600 text-white rounded-lg font-semibold hover:bg-blue-700 flex items-center gap-2 transition-colors whitespace-nowrap text-sm">
+                <button onclick="addToCalendar('${event.id}', this)" class="px-4 py-2 bg-blue-600 text-white rounded-lg font-semibold hover:bg-blue-700 flex items-center gap-2 transition-colors whitespace-nowrap text-sm">
                   <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="18" rx="2" ry="2"></rect><line x1="16" y1="2" x2="16" y2="6"></line><line x1="8" y1="2" x2="8" y2="6"></line><line x1="3" y1="10" x2="21" y2="10"></line></svg>
-                  Google Calendar
+                  Add to Calendar
                 </button>
-                <button onclick="downloadICS(${JSON.stringify(event).replace(/"/g, '&quot;')})" class="px-4 py-2 bg-green-600 text-white rounded-lg font-semibold hover:bg-green-700 flex items-center gap-2 transition-colors whitespace-nowrap text-sm">
-                  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="7 10 12 15 17 10"></polyline><line x1="12" y1="15" x2="12" y2="3"></line></svg>
-                  Download .ics
+                <button onclick="dismissEvent('${event.id}')" class="px-4 py-2 bg-gray-200 text-gray-700 rounded-lg font-semibold hover:bg-gray-300 flex items-center gap-2 transition-colors whitespace-nowrap text-sm">
+                  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
+                  Dismiss
                 </button>
               </div>
             </div>
@@ -154,6 +695,12 @@
                   <span class="font-medium">${event.time}</span>
                 ` : ''}
               </div>
+              ${event.host ? `
+                <div class="flex items-center gap-3 text-gray-700">
+                  <svg class="text-indigo-600" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"></path><circle cx="12" cy="7" r="4"></circle></svg>
+                  <span>Hosted by ${event.host}</span>
+                </div>
+              ` : ''}
               ${event.location ? `
                 <div class="flex items-center gap-3 text-gray-700">
                   <svg class="text-indigo-600" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z"></path><circle cx="12" cy="10" r="3"></circle></svg>
@@ -162,13 +709,19 @@
               ` : ''}
               ${event.url ? `
                 <div class="flex items-center gap-3 text-gray-700">
-                  <svg class="text-indigo-600" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline></svg>
+                  <svg class="text-indigo-600" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg>
                   <a href="${event.url}" target="_blank" class="text-indigo-600 hover:text-indigo-800 underline break-all">${event.url}</a>
                 </div>
               ` : ''}
               ${event.description ? `
                 <div class="mt-4 p-4 bg-gray-50 rounded-lg">
-                  <p class="text-gray-700">${event.description}</p>
+                  <p class="text-gray-700 whitespace-pre-wrap">${event.description}</p>
+                </div>
+              ` : ''}
+              ${event.gmailUrl ? `
+                <div class="flex items-center gap-3 text-gray-700">
+                  <svg class="text-indigo-600" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"></path><polyline points="22,6 12,13 2,6"></polyline></svg>
+                  <a href="${event.gmailUrl}" target="_blank" class="text-indigo-600 hover:text-indigo-800 underline text-sm">View original email</a>
                 </div>
               ` : ''}
             </div>
@@ -177,59 +730,134 @@
       `;
     }
 
-    function addToGoogleCalendar(event) {
-      const formatDate = (date, time) => {
-        const d = new Date(date);
-        if (time) {
-          const [h, m] = time.split(':');
-          d.setHours(parseInt(h), parseInt(m));
-        }
-        return d.toISOString().replace(/[-:]/g, '').split('.')[0] + 'Z';
-      };
+    // Parse a time string (handles "16:00", "4:00 PM", "4 PM", etc.) into { hours, minutes }
+    function parseTimeStr(timeStr) {
+      if (!timeStr) return { hours: 0, minutes: 0 };
+      const m = timeStr.match(/(\d{1,2})(?::(\d{2}))?\s*(am|pm)?/i);
+      if (!m) return { hours: 0, minutes: 0 };
+      let hours = parseInt(m[1]);
+      const minutes = parseInt(m[2] || '0');
+      const meridiem = (m[3] || '').toLowerCase();
+      if (meridiem === 'pm' && hours !== 12) hours += 12;
+      if (meridiem === 'am' && hours === 12) hours = 0;
+      return { hours, minutes };
+    }
 
-      const start = formatDate(event.date, event.time || '00:00');
-      const end = formatDate(event.date, event.time ? `${parseInt(event.time.split(':')[0]) + 1}:${event.time.split(':')[1]}` : '23:59');
+    // Build a local Date from event.date (YYYY-MM-DD) and event.time
+    function buildEventDate(dateStr, timeStr) {
+      const [year, month, day] = (dateStr || '').split('-').map(Number);
+      const { hours, minutes } = parseTimeStr(timeStr);
+      return new Date(year, month - 1, day, hours, minutes, 0);
+    }
+
+    // Add to calendar
+    window.addToCalendar = async function(eventId, btn) {
+      const event = allEvents.find(e => e.id == eventId);
+      if (!event) return;
+
+      // If signed in to Google, insert directly via Calendar API
+      if (accessToken) {
+        if (btn) { btn.disabled = true; btn.textContent = 'Adding…'; }
+        try {
+          // Ensure the token is set on the gapi client (may not be if it was
+          // restored from localStorage before gapi finished initialising)
+          gapi.client.setToken({ access_token: accessToken });
+
+          if (!gapi.client.calendar) {
+            throw new Error('Google Calendar API not loaded. Please refresh the page and try again.');
+          }
+
+          const tz = Intl.DateTimeFormat().resolvedOptions().timeZone;
+          const startDt = buildEventDate(event.date, event.time);
+          if (isNaN(startDt.getTime())) throw new Error(`Could not parse date/time: "${event.date}" "${event.time}"`);
+          const endDt = new Date(startDt.getTime() + 60 * 60 * 1000); // +1 hour
+          const insertResp = await gapi.client.calendar.events.insert({
+            calendarId: 'primary',
+            resource: {
+              summary: event.title,
+              location: event.location || '',
+              description: [event.description, event.url ? `Link: ${event.url}` : ''].filter(Boolean).join('\n\n'),
+              start: { dateTime: startDt.toISOString(), timeZone: tz },
+              end:   { dateTime: endDt.toISOString(),   timeZone: tz },
+            }
+          });
+          const htmlLink = insertResp.result?.htmlLink;
+          if (btn) {
+            btn.textContent = '✓ Added';
+            btn.classList.replace('bg-blue-600', 'bg-green-600');
+            btn.classList.replace('hover:bg-blue-700', 'hover:bg-green-700');
+            if (htmlLink) {
+              const link = document.createElement('a');
+              link.href = htmlLink;
+              link.target = '_blank';
+              link.textContent = 'View in Google Calendar →';
+              link.className = 'block mt-1 text-xs text-green-700 underline';
+              btn.parentNode.insertAdjacentElement('afterend', link);
+            }
+          }
+        } catch (err) {
+          if (btn) { btn.disabled = false; btn.innerHTML = '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="18" rx="2" ry="2"></rect><line x1="16" y1="2" x2="16" y2="6"></line><line x1="8" y1="2" x2="8" y2="6"></line><line x1="3" y1="10" x2="21" y2="10"></line></svg> Add to Calendar'; }
+          const detail = err?.result?.error?.message || err?.message || String(err);
+          const code = err?.result?.error?.code || err?.status || '';
+          showError(`Failed to add to calendar${code ? ` (${code})` : ''}: ${detail}`);
+          console.error('Calendar insert error:', err);
+        }
+        return;
+      }
+
+      // Not signed in — show options modal
+      const optionsHTML = `
+        <div class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50" onclick="this.remove()">
+          <div class="bg-white rounded-xl shadow-2xl p-6 max-w-sm m-4" onclick="event.stopPropagation()">
+            <h3 class="text-xl font-bold text-gray-800 mb-4">Add to Calendar</h3>
+            <div class="space-y-2">
+              <button onclick="addToGoogleCalendar(${JSON.stringify(event).replace(/"/g, '&quot;')}); this.closest('.fixed').remove();" class="w-full px-4 py-3 bg-blue-600 text-white rounded-lg font-semibold hover:bg-blue-700 flex items-center justify-center gap-2 transition-colors">
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="18" rx="2" ry="2"></rect><line x1="16" y1="2" x2="16" y2="6"></line><line x1="8" y1="2" x2="8" y2="6"></line><line x1="3" y1="10" x2="21" y2="10"></line></svg>
+                Google Calendar
+              </button>
+<button onclick="this.closest('.fixed').remove()" class="w-full px-4 py-3 bg-gray-200 text-gray-700 rounded-lg font-semibold hover:bg-gray-300 transition-colors">
+                Cancel
+              </button>
+            </div>
+          </div>
+        </div>
+      `;
+      document.body.insertAdjacentHTML('beforeend', optionsHTML);
+    };
+
+    // Dismiss event
+    window.dismissEvent = function(eventId) {
+      allEvents = allEvents.filter(e => e.id != eventId);
+      localStorage.setItem('extractedEvents', JSON.stringify(allEvents));
+      document.getElementById(`event-${eventId}`)?.remove();
+      displayAllEvents();
+    };
+
+    // Clear all events
+    window.relinkEmails = function() {
+      autoFetchRecentEmails();
+    };
+
+    window.clearAllEvents = function() {
+      if (confirm('Are you sure you want to clear all events?')) {
+        allEvents = [];
+        localStorage.setItem('extractedEvents', JSON.stringify(allEvents));
+        displayAllEvents();
+      }
+    };
+
+    function addToGoogleCalendar(event) {
+      const toGCalStamp = (d) => d.toISOString().replace(/[-:]/g, '').split('.')[0] + 'Z';
+      const startDt = buildEventDate(event.date, event.time || '00:00');
+      const endDt = event.time
+        ? new Date(startDt.getTime() + 60 * 60 * 1000)
+        : buildEventDate(event.date, '23:59');
+      const start = toGCalStamp(startDt);
+      const end = toGCalStamp(endDt);
       const details = `${event.description || ''}${event.url ? '\n\nLink: ' + event.url : ''}`;
       
       const url = `https://calendar.google.com/calendar/render?action=TEMPLATE&text=${encodeURIComponent(event.title)}&dates=${start}/${end}&details=${encodeURIComponent(details)}&location=${encodeURIComponent(event.location || '')}`;
       window.open(url, '_blank');
-    }
-
-    function downloadICS(event) {
-      const formatDate = (date, time) => {
-        const d = new Date(date);
-        if (time) {
-          const [h, m] = time.split(':');
-          d.setHours(parseInt(h), parseInt(m));
-        }
-        return d.toISOString().replace(/[-:]/g, '').split('.')[0] + 'Z';
-      };
-
-      const start = formatDate(event.date, event.time || '00:00');
-      const end = formatDate(event.date, event.time ? `${parseInt(event.time.split(':')[0]) + 1}:${event.time.split(':')[1]}` : '23:59');
-
-      const ics = `BEGIN:VCALENDAR
-VERSION:2.0
-PRODID:-//Event Parser//EN
-BEGIN:VEVENT
-UID:${Date.now()}@eventparser
-DTSTAMP:${new Date().toISOString().replace(/[-:]/g, '').split('.')[0]}Z
-DTSTART:${start}
-DTEND:${end}
-SUMMARY:${event.title}
-DESCRIPTION:${event.description || ''}${event.url ? '\\n\\nLink: ' + event.url : ''}
-LOCATION:${event.location || ''}
-${event.url ? `URL:${event.url}` : ''}
-END:VEVENT
-END:VCALENDAR`;
-
-      const blob = new Blob([ics], { type: 'text/calendar' });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = `${event.title.replace(/[^a-z0-9]/gi, '_')}.ics`;
-      a.click();
-      URL.revokeObjectURL(url);
     }
   </script>
 </body>
