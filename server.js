@@ -1,6 +1,7 @@
 const express = require('express');
 const cors = require('cors');
 const chrono = require('chrono-node');
+const ical = require('node-ical');
 require('dotenv').config();
 
 const app = express();
@@ -130,6 +131,101 @@ app.post('/api/extract-events', async (req, res) => {
     res.json(data);
   } catch (err) {
     res.status(502).json({ error: `Failed to reach Gemini API: ${err.message}` });
+  }
+});
+
+// Fetch and parse CMSA calendar events
+app.get('/api/fetch-cmsa-calendar', async (req, res) => {
+  const CMSA_CALENDAR_URL = 'https://cmsa.fas.harvard.edu/?post_type=tribe_events&ical=1&eventDisplay=list';
+
+  try {
+    // Fetch the ICS feed
+    const response = await fetch(CMSA_CALENDAR_URL, {
+      headers: { 'User-Agent': 'Mozilla/5.0 (compatible; EventParser/1.0)' }
+    });
+
+    if (!response.ok) {
+      return res.status(502).json({ error: `Failed to fetch calendar: ${response.statusText}` });
+    }
+
+    const icsData = await response.text();
+
+    // Parse the ICS data
+    const events = await ical.async.parseICS(icsData);
+
+    // Get date range: today to 7 days from now
+    const now = new Date();
+    const oneWeekFromNow = new Date();
+    oneWeekFromNow.setDate(now.getDate() + 7);
+
+    // Convert to our event format and filter by date
+    const parsedEvents = [];
+
+    for (const [uid, event] of Object.entries(events)) {
+      if (event.type !== 'VEVENT') continue;
+
+      const startDate = event.start;
+      if (!startDate) continue;
+
+      // Filter: only events within the next 7 days
+      if (startDate < now || startDate > oneWeekFromNow) continue;
+
+      // Format date and time
+      const dateStr = startDate.toISOString().split('T')[0]; // YYYY-MM-DD
+      const timeStr = `${String(startDate.getHours()).padStart(2, '0')}:${String(startDate.getMinutes()).padStart(2, '0')}`;
+
+      // Format end time if available
+      let endTimeStr = null;
+      if (event.end) {
+        endTimeStr = `${String(event.end.getHours()).padStart(2, '0')}:${String(event.end.getMinutes()).padStart(2, '0')}`;
+      }
+
+      // Extract location (remove extra details if present)
+      let location = event.location || null;
+      if (location) {
+        // Clean up location string (remove coordinates and extra info)
+        location = location.split(',')[0].trim();
+      }
+
+      // Build description from summary and description
+      let description = event.description || null;
+      if (description) {
+        // Clean up description: remove excessive whitespace and escape sequences
+        description = description
+          .replace(/\\n/g, '\n')
+          .replace(/\\,/g, ',')
+          .replace(/\s+/g, ' ')
+          .trim();
+      }
+
+      parsedEvents.push({
+        id: `cmsa_${uid}`,
+        title: event.summary || 'Untitled Event',
+        date: dateStr,
+        time: timeStr,
+        endTime: endTimeStr,
+        location: location,
+        host: 'CMSA',
+        description: description,
+        url: event.url || null,
+        source: 'calendar',
+        sourceUrl: CMSA_CALENDAR_URL,
+        calendarName: 'CMSA Calendar',
+        categories: event.categories ? event.categories.join(', ') : null
+      });
+    }
+
+    // Sort by date and time
+    parsedEvents.sort((a, b) => {
+      const dateCompare = a.date.localeCompare(b.date);
+      if (dateCompare !== 0) return dateCompare;
+      return (a.time || '').localeCompare(b.time || '');
+    });
+
+    res.json({ events: parsedEvents });
+  } catch (err) {
+    console.error('Calendar fetch error:', err);
+    res.status(502).json({ error: `Failed to fetch calendar: ${err.message}` });
   }
 });
 

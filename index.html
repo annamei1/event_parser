@@ -64,6 +64,30 @@
         </div>
       </div>
 
+      <!-- CMSA Calendar Section -->
+      <div class="mb-6 p-4 bg-green-50 border border-green-200 rounded-lg">
+        <div class="flex items-center justify-between">
+          <h2 class="text-lg font-semibold text-gray-800 flex items-center gap-2">
+            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <rect x="3" y="4" width="18" height="18" rx="2" ry="2"></rect>
+              <line x1="16" y1="2" x2="16" y2="6"></line>
+              <line x1="8" y1="2" x2="8" y2="6"></line>
+              <line x1="3" y1="10" x2="21" y2="10"></line>
+            </svg>
+            CMSA Calendar
+          </h2>
+          <button
+            id="fetchCmsaBtn"
+            onclick="fetchCmsaCalendar()"
+            class="px-4 py-2 bg-green-600 text-white rounded-lg font-semibold hover:bg-green-700 disabled:bg-gray-400 disabled:cursor-not-allowed transition-colors text-sm"
+          >
+            Fetch from CMSA Calendar
+          </button>
+        </div>
+        <p class="text-gray-600 text-sm mt-2">Fetch events from Harvard CMSA (next 7 days)</p>
+        <p id="cmsaLastFetched" class="text-gray-500 text-xs mt-1"></p>
+      </div>
+
       <!-- URL fetch section -->
       <div class="mb-4 flex gap-2">
         <input
@@ -160,6 +184,16 @@
 
     // Track Gmail message IDs that have already been sent to AI processing
     let processedEmailIds = new Set(JSON.parse(localStorage.getItem('processedEmailIds') || '[]'));
+
+    // Track CMSA calendar event IDs that have already been fetched (prevents re-adding dismissed events)
+    let processedCmsaEventIds = new Set(JSON.parse(localStorage.getItem('processedCmsaEventIds') || '[]'));
+
+    // Update CMSA last fetched display on load
+    setTimeout(() => {
+      updateCmsaLastFetched();
+      // Update every minute
+      setInterval(updateCmsaLastFetched, 60000);
+    }, 100);
 
     // Track event IDs that have been added to Google Calendar
     let addedEventIds = new Set(JSON.parse(localStorage.getItem('addedEventIds') || '[]'));
@@ -856,9 +890,24 @@
 
     // Helper function to render an event card
     function renderEventCard(event, showYear) {
+      // Determine source badge
+      const sourceBadge = (() => {
+        if (event.source === 'calendar') {
+          return '<span class="inline-flex items-center gap-1 px-2 py-1 bg-green-100 text-green-700 rounded text-xs font-semibold">📅 Calendar</span>';
+        } else if (event.source === 'website') {
+          return '<span class="inline-flex items-center gap-1 px-2 py-1 bg-blue-100 text-blue-700 rounded text-xs font-semibold">🌐 Website</span>';
+        } else {
+          return '<span class="inline-flex items-center gap-1 px-2 py-1 bg-gray-100 text-gray-700 rounded text-xs font-semibold">📧 Email</span>';
+        }
+      })();
+
       return `
           <div class="bg-white rounded-xl shadow-lg p-6 hover:shadow-xl transition-shadow mb-4" id="event-${event.id}">
-            <h3 class="text-xl font-bold text-gray-800 mb-4">${event.title}</h3>
+            <div class="flex items-start justify-between mb-2">
+              <h3 class="text-xl font-bold text-gray-800 flex-1">${event.title}</h3>
+              ${sourceBadge}
+            </div>
+            ${event.calendarName ? `<p class="text-sm text-gray-500 mb-3">From: ${event.calendarName}</p>` : ''}
             <div class="space-y-3">
               <div class="flex items-center gap-3 text-gray-700">
                 <svg class="text-indigo-600" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="18" rx="2" ry="2"></rect><line x1="16" y1="2" x2="16" y2="6"></line><line x1="8" y1="2" x2="8" y2="6"></line><line x1="3" y1="10" x2="21" y2="10"></line></svg>
@@ -902,7 +951,27 @@
               ` : ''}
               ${event.description ? `
                 <div class="mt-4 p-4 bg-gray-50 rounded-lg">
-                  <p class="text-gray-700 whitespace-pre-wrap">${event.description}</p>
+                  ${(() => {
+                    const maxLength = 200;
+                    const desc = event.description.replace(/</g, '&lt;').replace(/>/g, '&gt;');
+                    if (desc.length <= maxLength) {
+                      return `<p class="text-gray-700 whitespace-pre-wrap">${desc}</p>`;
+                    } else {
+                      const shortDesc = desc.substring(0, maxLength);
+                      return `
+                        <div class="description-container">
+                          <div class="desc-short" style="display: block;">
+                            <span class="text-gray-700 whitespace-pre-wrap">${shortDesc}... </span>
+                            <span class="read-more-btn text-indigo-600 hover:text-indigo-800 font-semibold cursor-pointer underline">read more</span>
+                          </div>
+                          <div class="desc-full" style="display: none;">
+                            <span class="text-gray-700 whitespace-pre-wrap">${desc} </span>
+                            <span class="read-less-btn text-indigo-600 hover:text-indigo-800 font-semibold cursor-pointer underline">read less</span>
+                          </div>
+                        </div>
+                      `;
+                    }
+                  })()}
                 </div>
               ` : ''}
               ${event.emailContent ? `
@@ -1083,6 +1152,99 @@
       autoFetchRecentEmails();
     };
 
+    // Helper function to format time ago
+    function formatTimeAgo(timestamp) {
+      const now = Date.now();
+      const diff = now - timestamp;
+      const seconds = Math.floor(diff / 1000);
+      const minutes = Math.floor(seconds / 60);
+      const hours = Math.floor(minutes / 60);
+      const days = Math.floor(hours / 24);
+
+      if (days > 0) {
+        return `${days} day${days !== 1 ? 's' : ''} ago`;
+      } else if (hours > 0) {
+        return `${hours} hour${hours !== 1 ? 's' : ''} ago`;
+      } else if (minutes > 0) {
+        return `${minutes} minute${minutes !== 1 ? 's' : ''} ago`;
+      } else {
+        return 'just now';
+      }
+    }
+
+    // Update CMSA last fetched display
+    function updateCmsaLastFetched() {
+      const lastFetched = localStorage.getItem('cmsaLastFetched');
+      const display = document.getElementById('cmsaLastFetched');
+
+      if (lastFetched && display) {
+        const timeAgo = formatTimeAgo(parseInt(lastFetched));
+        display.textContent = `Last fetched: ${timeAgo}`;
+      }
+    }
+
+    // Fetch CMSA Calendar events
+    window.fetchCmsaCalendar = async function() {
+      const btn = document.getElementById('fetchCmsaBtn');
+      btn.disabled = true;
+      btn.textContent = 'Fetching...';
+
+      try {
+        const response = await fetch('/api/fetch-cmsa-calendar');
+        if (!response.ok) {
+          throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+        }
+
+        const data = await response.json();
+        const calendarEvents = data.events || [];
+
+        if (calendarEvents.length === 0) {
+          alert('No upcoming CMSA events found in the next 7 days.');
+          return;
+        }
+
+        // Merge with existing events, avoiding duplicates and previously processed events
+        let addedCount = 0;
+        calendarEvents.forEach(event => {
+          // Skip if this CMSA event was already processed (dismissed or added to calendar)
+          if (processedCmsaEventIds.has(event.id)) return;
+
+          // Check if event already exists in current list (by id or by title+date)
+          const exists = allEvents.some(e =>
+            e.id === event.id ||
+            (e.title === event.title && e.date === event.date && e.time === event.time)
+          );
+
+          if (!exists) {
+            allEvents.push(event);
+            addedCount++;
+          }
+
+          // Mark as processed so it won't reappear after dismiss/calendar-add
+          processedCmsaEventIds.add(event.id);
+        });
+
+        // Persist processed CMSA IDs
+        localStorage.setItem('processedCmsaEventIds', JSON.stringify([...processedCmsaEventIds]));
+
+        // Save to localStorage
+        localStorage.setItem('extractedEvents', JSON.stringify(allEvents));
+
+        // Save last fetched timestamp
+        localStorage.setItem('cmsaLastFetched', Date.now().toString());
+
+        // Update display
+        displayAllEvents();
+        updateCmsaLastFetched();
+      } catch (err) {
+        console.error('CMSA calendar fetch error:', err);
+        alert(`Failed to fetch CMSA calendar: ${err.message}`);
+      } finally {
+        btn.disabled = false;
+        btn.textContent = 'Fetch from CMSA Calendar';
+      }
+    };
+
     window.clearAllEvents = function() {
       if (confirm('Are you sure you want to clear all events?')) {
         allEvents = [];
@@ -1091,9 +1253,69 @@
         localStorage.removeItem('addedEventIds');
         processedEmailIds.clear();
         localStorage.removeItem('processedEmailIds');
+        processedCmsaEventIds.clear();
+        localStorage.removeItem('processedCmsaEventIds');
         displayAllEvents();
       }
     };
+
+    // Event delegation for read more/less buttons
+    document.addEventListener('click', function(e) {
+      const target = e.target;
+
+      // Read more button clicked
+      if (target.classList.contains('read-more-btn') || target.closest('.read-more-btn')) {
+        console.log('READ MORE CLICKED');
+        e.preventDefault();
+        e.stopPropagation();
+        const btn = target.classList.contains('read-more-btn') ? target : target.closest('.read-more-btn');
+        const container = btn.closest('.description-container');
+        console.log('Container found:', container);
+        if (container) {
+          const shortDiv = container.querySelector('.desc-short');
+          const fullDiv = container.querySelector('.desc-full');
+          console.log('Before - Short display:', shortDiv?.style.display, 'Full display:', fullDiv?.style.display);
+          console.log('Before - Short computed:', window.getComputedStyle(shortDiv).display);
+          console.log('Before - Full computed:', window.getComputedStyle(fullDiv).display);
+          if (shortDiv && fullDiv) {
+            console.log('Full div innerHTML:', fullDiv.innerHTML);
+            console.log('Full div textContent:', fullDiv.textContent);
+            console.log('Full div offsetHeight:', fullDiv.offsetHeight);
+            console.log('Full div offsetWidth:', fullDiv.offsetWidth);
+
+            // Show full text, hide short text
+            shortDiv.style.display = 'none';
+            fullDiv.style.display = 'block';
+
+            console.log('After - Short display:', shortDiv.style.display, 'Full display:', fullDiv.style.display);
+            console.log('After - Short computed:', window.getComputedStyle(shortDiv).display);
+            console.log('After - Full computed:', window.getComputedStyle(fullDiv).display);
+            console.log('After - Full div offsetHeight:', fullDiv.offsetHeight);
+            console.log('After - Full div offsetWidth:', fullDiv.offsetWidth);
+            console.log('After - Full div getBoundingClientRect:', fullDiv.getBoundingClientRect());
+          }
+        }
+        return false;
+      }
+
+      // Read less button clicked
+      if (target.classList.contains('read-less-btn') || target.closest('.read-less-btn')) {
+        e.preventDefault();
+        e.stopPropagation();
+        const btn = target.classList.contains('read-less-btn') ? target : target.closest('.read-less-btn');
+        const container = btn.closest('.description-container');
+        if (container) {
+          const shortDiv = container.querySelector('.desc-short');
+          const fullDiv = container.querySelector('.desc-full');
+          if (shortDiv && fullDiv) {
+            // Show short text, hide full text
+            shortDiv.style.display = 'block';
+            fullDiv.style.display = 'none';
+          }
+        }
+        return false;
+      }
+    }, true);
 
     function addToGoogleCalendar(event) {
       const toGCalStamp = (d) => d.toISOString().replace(/[-:]/g, '').split('.')[0] + 'Z';
