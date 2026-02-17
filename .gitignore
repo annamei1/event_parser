@@ -22,3 +22,6 @@ Thumbs.db
 
 # Optional eslint cache
 .eslintcache
+
+# Claude Code project files
+.claude/

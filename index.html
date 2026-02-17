@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Event Email Parser</title>
+  <title>Event Parser</title>
   <script src="https://cdn.tailwindcss.com"></script>
   <script src="https://accounts.google.com/gsi/client" async defer></script>
   <script src="https://apis.google.com/js/api.js"></script>
@@ -18,7 +18,7 @@
           <line x1="8" y1="2" x2="8" y2="6"></line>
           <line x1="3" y1="10" x2="21" y2="10"></line>
         </svg>
-        Event Email Parser
+        Event Parser
       </h1>
       <p class="text-gray-600 mb-6">Connect Gmail to auto-extract events from recent emails, or paste content manually</p>
 
@@ -87,7 +87,6 @@
       ></textarea>
 
       <div id="errorBox" class="hidden mt-4 p-4 bg-red-50 border border-red-200 rounded-lg text-red-700"></div>
-      <div id="debugBox" class="hidden mt-4 p-4 bg-yellow-50 border border-yellow-200 rounded-lg text-yellow-800 text-sm font-mono overflow-x-auto whitespace-pre-wrap"></div>
 
       <button
         id="parseBtn"
@@ -107,7 +106,7 @@
   <script>
     // Configuration
     const GOOGLE_CLIENT_ID = '557433500490-cbm0sv985n4bopji202fojtvslsmpgol.apps.googleusercontent.com';
-    const GMAIL_SCOPES = 'https://www.googleapis.com/auth/gmail.readonly https://www.googleapis.com/auth/calendar.events';
+    const GMAIL_SCOPES = 'https://www.googleapis.com/auth/gmail.modify https://www.googleapis.com/auth/calendar.events';
 
     // Event scoring: emails must reach a minimum score to be treated as event emails.
     // Strong phrases score 3 (almost certainly an event invite).
@@ -144,7 +143,6 @@
     const urlInput = document.getElementById('urlInput');
     const fetchUrlBtn = document.getElementById('fetchUrlBtn');
     const errorBox = document.getElementById('errorBox');
-    const debugBox = document.getElementById('debugBox');
     const eventsContainer = document.getElementById('eventsContainer');
     const signInBtn = document.getElementById('signInBtn');
     const signOutBtn = document.getElementById('signOutBtn');
@@ -162,6 +160,9 @@
 
     // Track Gmail message IDs that have already been sent to AI processing
     let processedEmailIds = new Set(JSON.parse(localStorage.getItem('processedEmailIds') || '[]'));
+
+    // Track event IDs that have been added to Google Calendar
+    let addedEventIds = new Set(JSON.parse(localStorage.getItem('addedEventIds') || '[]'));
 
     // Restore saved access token
     function restoreSavedToken() {
@@ -245,8 +246,6 @@
           saveToken(response.access_token, response.expires_in);
           localStorage.setItem('gmailUserSignedIn', 'true');
           updateAuthUI(true);
-          // Auto-fetch 20 most recent emails
-          autoFetchRecentEmails();
         },
       });
     }
@@ -287,7 +286,7 @@
       return err?.result?.error?.message || err?.message || JSON.stringify(err);
     }
 
-    // Auto-fetch 20 most recent emails
+    // Fetch emails from the past week
     async function autoFetchRecentEmails() {
       if (!accessToken) return;
 
@@ -303,35 +302,64 @@
       // Ensure the token is set on the gapi client (in case it was restored before gapi loaded)
       gapi.client.setToken({ access_token: accessToken });
 
-      userInfo.innerHTML = '⏳ Auto-fetching 20 most recent emails...';
+      userInfo.innerHTML = '⏳ Fetching emails from the past week...';
 
       try {
+        // Calculate date 1 week ago
+        const oneWeekAgo = new Date();
+        oneWeekAgo.setDate(oneWeekAgo.getDate() - 7);
+        const dateString = `${oneWeekAgo.getFullYear()}/${String(oneWeekAgo.getMonth() + 1).padStart(2, '0')}/${String(oneWeekAgo.getDate()).padStart(2, '0')}`;
+
         const response = await gapi.client.gmail.users.messages.list({
           userId: 'me',
-          maxResults: 20
+          maxResults: 500, // Increased limit to get all emails from the past week
+          q: `after:${dateString}` // Only emails from the past week
         });
 
         const messages = response.result.messages || [];
 
         if (messages.length === 0) {
-          userInfo.innerHTML = '✓ Connected to Gmail (No recent emails found)';
+          userInfo.innerHTML = '✓ Connected to Gmail (No emails found)';
           return;
         }
 
-        // Fetch full email details
-        const emailPromises = messages.map(msg =>
-          gapi.client.gmail.users.messages.get({
-            userId: 'me',
-            id: msg.id,
-            format: 'full'
-          })
-        );
-
-        const emailDetails = await Promise.all(emailPromises);
-        const emails = emailDetails.map(e => e.result);
+        // Fetch full email details in batches of 10 to avoid Gmail concurrency limits
+        const BATCH_SIZE = 10;
+        const emails = [];
+        for (let i = 0; i < messages.length; i += BATCH_SIZE) {
+          const batch = messages.slice(i, i + BATCH_SIZE);
+          const batchResults = await Promise.all(
+            batch.map(msg =>
+              gapi.client.gmail.users.messages.get({
+                userId: 'me',
+                id: msg.id,
+                format: 'full'
+              })
+            )
+          );
+          emails.push(...batchResults.map(e => e.result));
+          userInfo.innerHTML = `⏳ Fetching emails… ${Math.min(i + BATCH_SIZE, messages.length)}/${messages.length}`;
+        }
 
         // Filter by keywords
-        const filteredEmails = filterEmailsByKeywords(emails);
+        let filteredEmails = filterEmailsByKeywords(emails);
+
+        // Exclude specific senders that we don't want to process
+        const excludedSenders = [
+          'mignone',
+          'student center',
+          'griffin gsas bulletin',
+          'harvard gazette'
+        ];
+
+        filteredEmails = filteredEmails.filter(email => {
+          const headers = email.payload.headers;
+          const from = (headers.find(h => h.name === 'From')?.value || '').toLowerCase();
+          const subject = (headers.find(h => h.name === 'Subject')?.value || '').toLowerCase();
+
+          // Exclude if from any of the excluded senders
+          return !excludedSenders.some(sender => from.includes(sender) || subject.includes(sender));
+        });
 
         const unprocessedCount = filteredEmails.filter(email => !processedEmailIds.has(email.id)).length;
         userInfo.innerHTML = `✓ Connected to Gmail - Found ${filteredEmails.length} potential event emails (${unprocessedCount} new, from ${emails.length} total)`;
@@ -387,49 +415,102 @@
       return emails.filter(email => scoreEmail(email) >= MIN_SCORE);
     }
 
-    // Batch process filtered emails — single API request for all emails
-    const MAX_CHARS_PER_EMAIL = 4000; // ~1000 tokens per email; keeps total well within limits
+    // Mark an email as read
+    async function markAsRead(messageId) {
+      try {
+        await gapi.client.gmail.users.messages.modify({
+          userId: 'me',
+          id: messageId,
+          resource: {
+            removeLabelIds: ['UNREAD']
+          }
+        });
+      } catch (err) {
+        // Silently fail - don't interrupt the flow if marking as read fails
+        console.error('Failed to mark email as read:', err);
+      }
+    }
+
+    // Batch process filtered emails — split into chunks to avoid Gemini rate limits
+    const MAX_CHARS_PER_EMAIL = 4000; // ~1000 tokens per email (not applied to Mignone or Student Center emails)
+    const GEMINI_BATCH_SIZE = 10; // emails per Gemini request
 
     async function batchProcessEmails(emails) {
+      // Create progress indicator
       const progressDiv = document.createElement('div');
-      progressDiv.className = 'mt-4 p-3 bg-indigo-50 border border-indigo-200 rounded-lg text-sm';
+      progressDiv.className = 'bg-blue-50 border border-blue-200 rounded-lg p-4 mb-4';
       progressDiv.innerHTML = `
-        <div class="font-semibold mb-2">Sending ${emails.length} emails to Gemini in one request…</div>
+        <div class="font-semibold text-gray-800 mb-2">Processing emails...</div>
         <div class="w-full bg-gray-200 rounded-full h-2">
-          <div class="bg-indigo-600 h-2 rounded-full transition-all animate-pulse" style="width: 100%"></div>
-        </div>`;
+          <div id="progressBar" class="bg-blue-600 h-2 rounded-full transition-all" style="width: 0%"></div>
+        </div>
+        <div id="progressText" class="text-sm text-gray-600 mt-2"></div>
+      `;
       eventsContainer.prepend(progressDiv);
+      const progressBar = document.getElementById('progressBar');
+      const progressText = document.getElementById('progressText');
 
-      // Build combined text with numbered sections; track Gmail URL per index
-      const gmailUrls = {}; // 1-based index → Gmail URL
-      const sections = [];
-      emails.forEach((email, i) => {
-        const idx = i + 1;
-        const subject = email.payload.headers.find(h => h.name === 'Subject')?.value || `Email ${idx}`;
-        const body = extractEmailBody(email).slice(0, MAX_CHARS_PER_EMAIL);
-        if (!body) return;
-        gmailUrls[idx] = `https://mail.google.com/mail/u/0/#all/${email.id}`;
-        sections.push(`=== EMAIL ${idx}: ${subject} ===\n${body}`);
-      });
-
-      if (sections.length === 0) {
-        progressDiv.remove();
-        return;
-      }
-
-      const combinedText = sections.join('\n\n');
-
-      // Mark all as processed before the API call so they're never re-sent even if dismissed
+      // Mark all as processed upfront so they're never re-sent even if dismissed
       emails.forEach(email => processedEmailIds.add(email.id));
       localStorage.setItem('processedEmailIds', JSON.stringify([...processedEmailIds]));
 
-      try {
-        await extractEventsFromText(combinedText, true, gmailUrls);
-      } catch (err) {
-        showError(`Failed to process emails: ${err.message || err}`);
+      // Process all emails with Gemini
+      for (let c = 0; c < emails.length; c += GEMINI_BATCH_SIZE) {
+        const chunk = emails.slice(c, c + GEMINI_BATCH_SIZE);
+        const batchNum = Math.floor(c / GEMINI_BATCH_SIZE) + 1;
+        const totalBatches = Math.ceil(emails.length / GEMINI_BATCH_SIZE);
+
+        // Update progress
+        const progress = Math.round((c / emails.length) * 100);
+        progressBar.style.width = `${progress}%`;
+        progressText.textContent = `Sending batch ${batchNum}/${totalBatches} (${chunk.length} emails) to Gemini...`;
+
+        const gmailUrls = {};
+        const emailContents = {};
+        const sections = [];
+        chunk.forEach((email, i) => {
+          const idx = i + 1;
+          const headers = email.payload.headers;
+          const subject = headers.find(h => h.name === 'Subject')?.value || `Email ${idx}`;
+          const from = headers.find(h => h.name === 'From')?.value || '';
+          const date = headers.find(h => h.name === 'Date')?.value || '';
+          const body = extractEmailBody(email);
+
+          const truncatedBody = body.slice(0, MAX_CHARS_PER_EMAIL);
+          if (!truncatedBody) return;
+          gmailUrls[idx] = `https://mail.google.com/mail/u/0/#all/${email.threadId}`;
+          const htmlBody = extractEmailHtmlBody(email);
+          emailContents[idx] = { subject, from, date, body: body.slice(0, 3000), html: htmlBody };
+          sections.push(`=== EMAIL ${idx}: ${subject} ===\n${truncatedBody}`);
+        });
+
+        if (sections.length === 0) continue;
+
+        const combinedText = sections.join('\n\n');
+
+        try {
+          await extractEventsFromText(combinedText, true, gmailUrls, emailContents);
+
+          // Mark all emails in this batch as read
+          await Promise.all(chunk.map(email => markAsRead(email.id)));
+
+          displayAllEvents();
+        } catch (err) {
+          showError(`Failed to process batch: ${err.message || err}`);
+        }
+
+        // Wait 2 seconds between batches to respect rate limits
+        if (c + GEMINI_BATCH_SIZE < emails.length) {
+          await new Promise(r => setTimeout(r, 2000));
+        }
       }
 
-      progressDiv.remove();
+      // Complete progress
+      progressBar.style.width = '100%';
+      progressText.textContent = `✓ Processing complete - ${emails.length} emails processed`;
+      progressDiv.classList.remove('bg-blue-50', 'border-blue-200');
+      progressDiv.classList.add('bg-green-50', 'border-green-200');
+
       displayAllEvents();
     }
 
@@ -469,6 +550,24 @@
       return '';
     }
 
+    // Extract the raw HTML body from an email (for display in modal)
+    function extractEmailHtmlBody(email) {
+      function decode(data) {
+        return atob(data.replace(/-/g, '+').replace(/_/g, '/'));
+      }
+      function findHtml(payload) {
+        if (payload.mimeType === 'text/html' && payload.body?.data) {
+          return decode(payload.body.data);
+        }
+        for (const part of (payload.parts || [])) {
+          const found = findHtml(part);
+          if (found) return found;
+        }
+        return '';
+      }
+      return findHtml(email.payload);
+    }
+
     // Initialize Google APIs when loaded
     if (typeof gapi !== 'undefined') {
       gapiLoaded();
@@ -482,8 +581,7 @@
         gisLoaded();
         // Try to restore previous session
         if (restoreSavedToken()) {
-          // Valid saved token — auto-fetch without any prompt
-          autoFetchRecentEmails();
+          // Valid saved token — just show signed-in UI
         } else if (localStorage.getItem('gmailUserSignedIn') === 'true') {
           // Token expired but user was previously signed in — try silent re-auth
           // (no popup shown if Google browser session is still active)
@@ -533,11 +631,10 @@
     });
 
     // gmailUrls: either null (manual paste), a string (single email), or a {1: url, 2: url, ...} map (batch)
-    async function extractEventsFromText(emailText, silent = false, gmailUrls = null) {
+    async function extractEventsFromText(emailText, silent = false, gmailUrls = null, emailContents = null) {
       if (!silent) {
         setLoading(true);
         hideError();
-        hideDebug();
       }
 
       try {
@@ -552,10 +649,6 @@
           })
         });
 
-        if (!silent) {
-          showDebug(`Status: ${response.status}, Reading response...`);
-        }
-
         if (!response.ok) {
           const errorData = await response.json();
           throw new Error(`API Error: ${errorData.error || response.statusText}`);
@@ -566,18 +659,55 @@
         const cleanContent = content.replace(/```json|```/g, '').trim();
         const events = JSON.parse(cleanContent);
 
-        const eventArray = (Array.isArray(events) ? events : [events]).filter(e => e.time);
+        const now = new Date();
+        let eventArray = (Array.isArray(events) ? events : [events])
+          .filter(e => e.title)
+          .filter(e => {
+            if (!e.date) return true;
+            const eventDate = buildEventDate(e.date, e.time);
+            return eventDate >= now;
+          });
+
+        // Events from Mignone Center and Student Center are kept as individual event blocks (not consolidated)
 
         // Add events to global list
         eventArray.forEach(event => {
           // Add unique ID and timestamp
           event.id = Date.now() + Math.random();
           event.addedAt = new Date().toISOString();
-          if (gmailUrls) {
-            // If gmailUrls is a map, resolve via sourceEmailIndex returned by the AI
-            event.gmailUrl = typeof gmailUrls === 'object' && !Array.isArray(gmailUrls)
-              ? (gmailUrls[event.sourceEmailIndex] ?? null)
-              : gmailUrls;
+          if (gmailUrls && typeof gmailUrls === 'object' && !Array.isArray(gmailUrls)) {
+            let matchedIdx = null;
+            // 1. Try Gemini's sourceEmailIndex
+            if (gmailUrls[event.sourceEmailIndex]) {
+              matchedIdx = event.sourceEmailIndex;
+            } else {
+              // 2. Match event title against each email section in the batch text
+              const markerRe = /=== EMAIL (\d+):.*?===/g;
+              const markers = [...emailText.matchAll(markerRe)];
+              for (let mi = 0; mi < markers.length; mi++) {
+                const idx = parseInt(markers[mi][1]);
+                const start = markers[mi].index;
+                const end = mi + 1 < markers.length ? markers[mi + 1].index : emailText.length;
+                const section = emailText.substring(start, end).toLowerCase();
+                if (event.title && section.includes(event.title.toLowerCase())) {
+                  matchedIdx = idx;
+                  break;
+                }
+              }
+              // 3. Last resort: use the only entry if there's just one email
+              if (!matchedIdx) {
+                const keys = Object.keys(gmailUrls);
+                if (keys.length === 1) matchedIdx = keys[0];
+              }
+            }
+            if (matchedIdx) {
+              event.gmailUrl = gmailUrls[matchedIdx];
+              if (emailContents && emailContents[matchedIdx]) {
+                event.emailContent = emailContents[matchedIdx];
+              }
+            }
+          } else if (gmailUrls) {
+            event.gmailUrl = gmailUrls;
           }
 
           // Check for duplicates (same title and date)
@@ -600,12 +730,10 @@
 
         if (!silent) {
           displayAllEvents();
-          hideDebug();
         }
       } catch (err) {
         if (!silent) {
           showError(`Failed: ${err.message}`);
-          showDebug(`Error: ${err.toString()}`);
         }
         throw err;
       } finally {
@@ -631,20 +759,71 @@
       errorBox.classList.add('hidden');
     }
 
-    function showDebug(msg) {
-      debugBox.textContent = msg;
-      debugBox.classList.remove('hidden');
-    }
+    // Helper function to format virtual meeting links with friendly names
+    function formatVirtualLink(url) {
+      if (!url) return null;
+      const urlLower = url.toLowerCase();
 
-    function hideDebug() {
-      debugBox.classList.add('hidden');
+      // Detect virtual meeting platforms
+      if (urlLower.includes('zoom.us') || urlLower.includes('zoom.com')) {
+        return { text: 'Zoom', url: url };
+      }
+      if (urlLower.includes('meet.google.com') || urlLower.includes('meet.app.goo.gl')) {
+        return { text: 'Google Meet', url: url };
+      }
+      if (urlLower.includes('teams.microsoft.com') || urlLower.includes('teams.live.com')) {
+        return { text: 'Microsoft Teams', url: url };
+      }
+      if (urlLower.includes('webex.com')) {
+        return { text: 'Webex', url: url };
+      }
+      if (urlLower.includes('gotomeeting.com') || urlLower.includes('gotomeet.me')) {
+        return { text: 'GoToMeeting', url: url };
+      }
+      if (urlLower.includes('bluejeans.com')) {
+        return { text: 'BlueJeans', url: url };
+      }
+      if (urlLower.includes('whereby.com')) {
+        return { text: 'Whereby', url: url };
+      }
+
+      // If it's a URL but not a known virtual platform, return full URL
+      if (url.startsWith('http://') || url.startsWith('https://')) {
+        return { text: url, url: url };
+      }
+
+      // Not a link, just plain text
+      return null;
     }
 
     function displayAllEvents() {
+      const now = new Date();
+
+      // Clean up addedEventIds - remove events that have passed
+      addedEventIds.forEach(eventId => {
+        const event = allEvents.find(e => String(e.id) === String(eventId));
+        if (event) {
+          const eventDateTime = buildEventDate(event.date, event.time);
+          if (eventDateTime < now) {
+            addedEventIds.delete(String(eventId));
+          }
+        }
+      });
+      localStorage.setItem('addedEventIds', JSON.stringify([...addedEventIds]));
+
+      // Filter out events that have been added to calendar
+      const displayEvents = allEvents.filter(event =>
+        !addedEventIds.has(String(event.id))
+      );
+
       // Sort by date (upcoming first)
-      const sortedEvents = [...allEvents].sort((a, b) => {
+      const sortedEvents = displayEvents.sort((a, b) => {
         return new Date(a.date) - new Date(b.date);
       });
+
+      // Show year only if events span more than one calendar year
+      const years = new Set(sortedEvents.map(e => (e.date || '').split('-')[0]).filter(Boolean));
+      const showYear = years.size !== 1;
 
       if (sortedEvents.length === 0) {
         eventsContainer.innerHTML = `
@@ -671,28 +850,22 @@
             </button>
           </div>
         </div>
-        ${sortedEvents.map(event => `
+        ${sortedEvents.map(event => renderEventCard(event, showYear)).join('')}
+      `;
+    }
+
+    // Helper function to render an event card
+    function renderEventCard(event, showYear) {
+      return `
           <div class="bg-white rounded-xl shadow-lg p-6 hover:shadow-xl transition-shadow mb-4" id="event-${event.id}">
-            <div class="flex flex-col md:flex-row md:justify-between md:items-start gap-4 mb-4">
-              <h3 class="text-xl font-bold text-gray-800">${event.title}</h3>
-              <div class="flex flex-wrap gap-2">
-                <button onclick="addToCalendar('${event.id}', this)" class="px-4 py-2 bg-blue-600 text-white rounded-lg font-semibold hover:bg-blue-700 flex items-center gap-2 transition-colors whitespace-nowrap text-sm">
-                  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="18" rx="2" ry="2"></rect><line x1="16" y1="2" x2="16" y2="6"></line><line x1="8" y1="2" x2="8" y2="6"></line><line x1="3" y1="10" x2="21" y2="10"></line></svg>
-                  Add to Calendar
-                </button>
-                <button onclick="dismissEvent('${event.id}')" class="px-4 py-2 bg-gray-200 text-gray-700 rounded-lg font-semibold hover:bg-gray-300 flex items-center gap-2 transition-colors whitespace-nowrap text-sm">
-                  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
-                  Dismiss
-                </button>
-              </div>
-            </div>
+            <h3 class="text-xl font-bold text-gray-800 mb-4">${event.title}</h3>
             <div class="space-y-3">
               <div class="flex items-center gap-3 text-gray-700">
                 <svg class="text-indigo-600" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="18" rx="2" ry="2"></rect><line x1="16" y1="2" x2="16" y2="6"></line><line x1="8" y1="2" x2="8" y2="6"></line><line x1="3" y1="10" x2="21" y2="10"></line></svg>
-                <span class="font-medium">${event.date}</span>
+                <span class="font-medium">${formatDateDisplay(event.date, showYear)}</span>
                 ${event.time ? `
                   <svg class="text-indigo-600 ml-4" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"></circle><polyline points="12 6 12 12 16 14"></polyline></svg>
-                  <span class="font-medium">${event.time}</span>
+                  <span class="font-medium">${formatTimeDisplay(event.time)}</span>
                 ` : ''}
               </div>
               ${event.host ? `
@@ -704,13 +877,27 @@
               ${event.location ? `
                 <div class="flex items-center gap-3 text-gray-700">
                   <svg class="text-indigo-600" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z"></path><circle cx="12" cy="10" r="3"></circle></svg>
-                  <span>${event.location}</span>
+                  ${(() => {
+                    const virtualLink = formatVirtualLink(event.location);
+                    if (virtualLink) {
+                      return `<a href="${virtualLink.url}" target="_blank" class="text-indigo-600 hover:text-indigo-800 underline">${virtualLink.text}</a>`;
+                    }
+                    return `<span>${event.location}</span>`;
+                  })()}
                 </div>
               ` : ''}
               ${event.url ? `
                 <div class="flex items-center gap-3 text-gray-700">
                   <svg class="text-indigo-600" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg>
-                  <a href="${event.url}" target="_blank" class="text-indigo-600 hover:text-indigo-800 underline break-all">${event.url}</a>
+                  ${(() => {
+                    const virtualLink = formatVirtualLink(event.url);
+                    if (virtualLink && virtualLink.text !== event.url) {
+                      // It's a virtual meeting link, show friendly name
+                      return `<a href="${virtualLink.url}" target="_blank" class="text-indigo-600 hover:text-indigo-800 underline">${virtualLink.text}</a>`;
+                    }
+                    // Regular URL, show full link (but not breaking layout)
+                    return `<a href="${event.url}" target="_blank" class="text-indigo-600 hover:text-indigo-800 underline break-all">${event.url}</a>`;
+                  })()}
                 </div>
               ` : ''}
               ${event.description ? `
@@ -718,15 +905,24 @@
                   <p class="text-gray-700 whitespace-pre-wrap">${event.description}</p>
                 </div>
               ` : ''}
-              ${event.gmailUrl ? `
+              ${event.emailContent ? `
                 <div class="flex items-center gap-3 text-gray-700">
                   <svg class="text-indigo-600" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"></path><polyline points="22,6 12,13 2,6"></polyline></svg>
-                  <a href="${event.gmailUrl}" target="_blank" class="text-indigo-600 hover:text-indigo-800 underline text-sm">View original email</a>
+                  <button onclick="viewOriginalEmail('${event.id}')" class="text-indigo-600 hover:text-indigo-800 underline text-sm bg-transparent border-none cursor-pointer p-0">View original email</button>
                 </div>
               ` : ''}
             </div>
+            <div class="flex gap-2 mt-4">
+                <button onclick="addToCalendar('${event.id}', this)" class="px-4 py-2 bg-blue-600 text-white rounded-lg font-semibold hover:bg-blue-700 flex items-center gap-2 transition-colors whitespace-nowrap text-sm">
+                  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="18" rx="2" ry="2"></rect><line x1="16" y1="2" x2="16" y2="6"></line><line x1="8" y1="2" x2="8" y2="6"></line><line x1="3" y1="10" x2="21" y2="10"></line></svg>
+                  Add to Calendar
+                </button>
+                <button onclick="dismissEvent('${event.id}')" class="px-4 py-2 bg-gray-200 text-gray-700 rounded-lg font-semibold hover:bg-gray-300 flex items-center gap-2 transition-colors whitespace-nowrap text-sm">
+                  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
+                  Dismiss
+                </button>
+            </div>
           </div>
-        `).join('')}
       `;
     }
 
@@ -741,6 +937,27 @@
       if (meridiem === 'pm' && hours !== 12) hours += 12;
       if (meridiem === 'am' && hours === 12) hours = 0;
       return { hours, minutes };
+    }
+
+    // Format a time string consistently as "2:00 PM" / "10:30 AM"
+    function formatTimeDisplay(timeStr) {
+      if (!timeStr) return '';
+      const { hours, minutes } = parseTimeStr(timeStr);
+      const period = hours < 12 ? 'AM' : 'PM';
+      const h = hours % 12 || 12;
+      const m = String(minutes).padStart(2, '0');
+      return `${h}:${m} ${period}`;
+    }
+
+    // Format a YYYY-MM-DD date string as "Saturday, Mar 15 2026" (year optional)
+    function formatDateDisplay(dateStr, showYear = true) {
+      if (!dateStr) return dateStr;
+      const [year, month, day] = dateStr.split('-').map(Number);
+      const d = new Date(year, month - 1, day);
+      if (isNaN(d.getTime())) return dateStr;
+      const weekday = d.toLocaleDateString('en-US', { weekday: 'long' });
+      const mon = d.toLocaleDateString('en-US', { month: 'short' });
+      return showYear ? `${weekday}, ${mon} ${day} ${year}` : `${weekday}, ${mon} ${day}`;
     }
 
     // Build a local Date from event.date (YYYY-MM-DD) and event.time
@@ -781,20 +998,9 @@
               end:   { dateTime: endDt.toISOString(),   timeZone: tz },
             }
           });
-          const htmlLink = insertResp.result?.htmlLink;
-          if (btn) {
-            btn.textContent = '✓ Added';
-            btn.classList.replace('bg-blue-600', 'bg-green-600');
-            btn.classList.replace('hover:bg-blue-700', 'hover:bg-green-700');
-            if (htmlLink) {
-              const link = document.createElement('a');
-              link.href = htmlLink;
-              link.target = '_blank';
-              link.textContent = 'View in Google Calendar →';
-              link.className = 'block mt-1 text-xs text-green-700 underline';
-              btn.parentNode.insertAdjacentElement('afterend', link);
-            }
-          }
+          addedEventIds.add(String(event.id));
+          localStorage.setItem('addedEventIds', JSON.stringify([...addedEventIds]));
+          displayAllEvents(); // Refresh to remove event from list
         } catch (err) {
           if (btn) { btn.disabled = false; btn.innerHTML = '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="18" rx="2" ry="2"></rect><line x1="16" y1="2" x2="16" y2="6"></line><line x1="8" y1="2" x2="8" y2="6"></line><line x1="3" y1="10" x2="21" y2="10"></line></svg> Add to Calendar'; }
           const detail = err?.result?.error?.message || err?.message || String(err);
@@ -825,10 +1031,49 @@
       document.body.insertAdjacentHTML('beforeend', optionsHTML);
     };
 
+    // View original email in a modal
+    window.viewOriginalEmail = function(eventId) {
+      const event = allEvents.find(e => e.id == eventId);
+      if (!event || !event.emailContent) return;
+      const ec = event.emailContent;
+      const escHtml = (s) => s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+
+      const bodyContent = ec.html
+        ? `<iframe sandbox="allow-same-origin" class="w-full flex-1 border-0" style="min-height:300px"></iframe>`
+        : `<div class="p-6 overflow-y-auto flex-1"><pre class="text-sm text-gray-700 whitespace-pre-wrap font-sans">${escHtml(ec.body)}</pre></div>`;
+
+      const modalHTML = `
+        <div class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4" onclick="this.remove()">
+          <div class="bg-white rounded-xl shadow-2xl max-w-2xl w-full max-h-[80vh] flex flex-col" onclick="event.stopPropagation()">
+            <div class="p-6 border-b border-gray-200 flex-shrink-0">
+              <div class="flex justify-between items-start">
+                <h3 class="text-lg font-bold text-gray-800 pr-4">${escHtml(ec.subject)}</h3>
+                <button onclick="this.closest('.fixed').remove()" class="text-gray-400 hover:text-gray-600 text-2xl leading-none">&times;</button>
+              </div>
+              <div class="mt-2 text-sm text-gray-600 space-y-1">
+                <div><span class="font-medium">From:</span> ${escHtml(ec.from)}</div>
+                <div><span class="font-medium">Date:</span> ${escHtml(ec.date)}</div>
+              </div>
+            </div>
+            ${bodyContent}
+          </div>
+        </div>
+      `;
+      document.body.insertAdjacentHTML('beforeend', modalHTML);
+
+      // If HTML email, write content into the sandboxed iframe
+      if (ec.html) {
+        const iframe = document.querySelector('.fixed iframe');
+        iframe.srcdoc = ec.html;
+      }
+    };
+
     // Dismiss event
     window.dismissEvent = function(eventId) {
       allEvents = allEvents.filter(e => e.id != eventId);
       localStorage.setItem('extractedEvents', JSON.stringify(allEvents));
+      addedEventIds.delete(String(eventId));
+      localStorage.setItem('addedEventIds', JSON.stringify([...addedEventIds]));
       document.getElementById(`event-${eventId}`)?.remove();
       displayAllEvents();
     };
@@ -842,6 +1087,10 @@
       if (confirm('Are you sure you want to clear all events?')) {
         allEvents = [];
         localStorage.setItem('extractedEvents', JSON.stringify(allEvents));
+        addedEventIds.clear();
+        localStorage.removeItem('addedEventIds');
+        processedEmailIds.clear();
+        localStorage.removeItem('processedEmailIds');
         displayAllEvents();
       }
     };

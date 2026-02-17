@@ -6,6 +6,7 @@ AI-powered tool to automatically extract event information from emails and add t
 
 - 🤖 **AI-Powered Extraction**: Uses Google's Gemini API to intelligently parse event details from email text
 - 📧 **Smart Gmail Integration**: Automatically fetches and filters emails from the last 7 days
+- ✉️ **Auto-Mark as Read**: Processed emails are automatically marked as read in Gmail
 - 🔍 **Keyword Pre-Filtering**: Hard-coded keywords (event, talk, seminar, etc.) filter emails before API calls to save costs
 - 📅 **Calendar Integration**: Export events to Google Calendar or download .ics files for iCal
 - 📋 **Event Management**: View all extracted events in one list, add to calendar or dismiss unwanted events
@@ -79,7 +80,7 @@ PORT=3000
    - User support email: your email
    - Developer contact: your email
    - Save and Continue (skip optional fields)
-   - **Add scope**: `https://www.googleapis.com/auth/gmail.readonly`
+   - **Add scope**: `https://www.googleapis.com/auth/gmail.modify`
    - Add your email as test user
    - Save and return to Credentials
 
@@ -164,6 +165,44 @@ Simply open `standalone.html` in your web browser:
 - **Duplicate Detection**: The app automatically prevents duplicate events from being added
 - **Auto-Sorting**: Events are displayed in chronological order (upcoming first)
 - **Clear All**: Option to clear all events when needed
+
+## Configuration
+
+### Changing the Email Fetch Time Range
+
+By default, the app fetches emails from the **past 7 days**. You can customize this range by editing the code:
+
+**Location**: `index.html` (lines 316-319)
+
+```javascript
+// Calculate date 1 week ago
+const oneWeekAgo = new Date();
+oneWeekAgo.setDate(oneWeekAgo.getDate() - 7);  // Change this number
+```
+
+**To change the range**:
+1. Open `index.html` in a text editor
+2. Find the `autoFetchRecentEmails()` function (around line 298)
+3. Locate the date calculation (line 318)
+4. Change the number in `getDate() - 7` to your desired number of days:
+   - For 3 days: `getDate() - 3`
+   - For 2 weeks: `getDate() - 14`
+   - For 1 month: `getDate() - 30`
+5. Optionally, update the UI message on line 313 to match:
+   ```javascript
+   userInfo.innerHTML = '⏳ Fetching emails from the past X days...';
+   ```
+6. Save the file and refresh your browser
+
+**Example - Fetch emails from past 14 days**:
+```javascript
+// Calculate date 2 weeks ago
+const twoWeeksAgo = new Date();
+twoWeeksAgo.setDate(twoWeeksAgo.getDate() - 14);
+const dateString = `${twoWeeksAgo.getFullYear()}/${String(twoWeeksAgo.getMonth() + 1).padStart(2, '0')}/${String(twoWeeksAgo.getDate()).padStart(2, '0')}`;
+```
+
+**Note**: Gmail API has a limit of 500 emails per request. If you increase the time range significantly and have a high email volume, you may not get all emails from that period.
 
 ## Project Structure
 
