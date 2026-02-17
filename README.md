@@ -2,51 +2,21 @@
 
 AI-powered tool to automatically extract event information from emails and add them to your calendar.
 
-## Features
+## Screenshots
 
-- 🤖 **AI-Powered Extraction**: Uses Google's Gemini API to intelligently parse event details from email text
-- 📧 **Smart Gmail Integration**: Automatically fetches and filters emails from the last 7 days
-- ✉️ **Auto-Mark as Read**: Processed emails are automatically marked as read in Gmail
-- 🔍 **Keyword Pre-Filtering**: Hard-coded keywords (event, talk, seminar, etc.) filter emails before API calls to save costs
-- 📅 **Calendar Integration**: Export events to Google Calendar or download .ics files for iCal
-- 📋 **Event Management**: View all extracted events in one list, add to calendar or dismiss unwanted events
-- 💾 **Persistent Storage**: Events are saved locally and persist across browser sessions
-- 📱 **Mobile-Friendly**: Responsive design works on phones and desktops
-- 🔒 **Secure**: API keys are stored server-side (or hardcoded for standalone use)
-- ⚡ **Two Versions**: Server version (secure) or standalone HTML file (no installation needed)
+### Main Interface
+![Main Interface](assets/main-interface.png)
 
-## Event Information Extracted
-
-- Event title
-- Date (YYYY-MM-DD format)
-- Time (24-hour format)
-- Location
-- Description
-- Registration/event URL
-
-## Quick Start
-
-**TL;DR Setup Checklist:**
-
-1. ✅ Install [Node.js](https://nodejs.org/) (v14+)
-2. ✅ Clone repo and run `npm install`
-3. ✅ Get [Gemini API key](https://aistudio.google.com/app/apikey) → add to `.env`
-4. ✅ Create [Google Cloud project](https://console.cloud.google.com/)
-5. ✅ Enable **Gmail API** and **Calendar API**
-6. ✅ Create **OAuth 2.0 Client ID** and add to `index.html`
-7. ✅ Add yourself as test user in OAuth consent screen
-8. ✅ Run `npm start` → open http://localhost:3000
-
-See detailed instructions below ⬇️
+### Event List View
+![Event List](assets/event-list.png)
 
 ## Setup
 
 ### Prerequisites
 
-- **For server version** (`index.html`): Node.js (v14 or higher) and npm
-- **For standalone version** (`standalone.html`): Just a web browser
+- Node.js (v14 or higher) and npm
 - **Gemini API key** from [Google AI Studio](https://aistudio.google.com/app/apikey) (free tier available)
-- **For Gmail integration**: Google Cloud project with Gmail API and Calendar API enabled + OAuth 2.0 Client ID (see setup below)
+- **Google Cloud project** with Gmail API and Calendar API enabled + OAuth 2.0 Client ID (see setup below)
 
 ### Installation
 
@@ -135,17 +105,16 @@ PORT=3000
 
 9. **Copy your Client ID** (looks like: `xxxxx.apps.googleusercontent.com`)
 
-10. **Add to your HTML files**:
-    - For server version: Update `GOOGLE_CLIENT_ID` in `index.html` (line 108)
-    - For standalone: Update `GOOGLE_CLIENT_ID` in `standalone.html` (if using standalone version)
+10. **Add your Client ID to `index.html`**:
+    - Open `index.html` in a text editor
+    - Find line 108: `const GOOGLE_CLIENT_ID = '...'`
+    - Replace with your Client ID:
 
     ```javascript
     const GOOGLE_CLIENT_ID = 'YOUR_CLIENT_ID_HERE.apps.googleusercontent.com';
     ```
 
 ### Running the Application
-
-#### Option 1: Server Version (Secure, Requires Node.js)
 
 Start the server:
 ```bash
@@ -161,15 +130,6 @@ Open your browser and navigate to:
 ```
 http://localhost:3000
 ```
-
-#### Option 2: Standalone Version (No Server Required)
-
-Simply open `standalone.html` in your web browser:
-- Double-click the file, or
-- Drag it to your browser, or
-- Right-click → Open with → Your browser
-
-**Note**: Gmail OAuth will work, but you'll see your Gemini API key in the HTML source code (acceptable for personal use).
 
 ## Usage
 
@@ -244,8 +204,7 @@ const dateString = `${twoWeeksAgo.getFullYear()}/${String(twoWeeksAgo.getMonth()
 
 ```
 event_parser/
-├── index.html          # Server version (with backend API proxy)
-├── standalone.html     # Standalone version (no server needed)
+├── index.html          # Frontend application
 ├── server.js           # Express backend (API proxy)
 ├── package.json        # Dependencies
 ├── .env               # Environment variables (not committed)
@@ -253,21 +212,8 @@ event_parser/
 └── README.md          # This file
 ```
 
-## Version Comparison
-
-| Feature | `index.html` (Server) | `standalone.html` |
-|---------|----------------------|-------------------|
-| **Requires Node.js** | ✅ Yes | ❌ No |
-| **Gmail Integration** | ✅ Yes | ✅ Yes |
-| **Event Extraction** | ✅ Yes | ✅ Yes |
-| **Calendar Export** | ✅ Yes | ✅ Yes |
-| **API Key Security** | 🔒 Secure (server-side) | ⚠️ Visible in code |
-| **Setup Complexity** | Medium | Easy |
-| **Best For** | Production use | Personal use |
-
 ## Security
 
-### Server Version (`index.html`)
 - **Gemini API key** is stored in `.env` file (never committed to git)
 - Backend proxy prevents key exposure in client-side code
 - CORS enabled for local development
@@ -278,12 +224,6 @@ event_parser/
 - ✅ **OAuth Client ID in `index.html` is safe** - this is public by design
 - ✅ **No OAuth Client Secret** - we use the implicit grant flow which doesn't require a secret
 - 🔒 Users must authorize the app to access their Gmail/Calendar data
-
-### Standalone Version (`standalone.html`)
-- Gemini API key is visible in HTML source code (acceptable for personal use)
-- OAuth Client ID is public (normal for OAuth)
-- Gmail access is read-only
-- No sensitive data stored on any server
 
 ## Troubleshooting
 
@@ -342,8 +282,8 @@ event_parser/
 **Problem**: "Failed: load failed" or API errors
 
 **Solution**:
-- **Server version**: Make sure Node.js server is running (`npm start`)
-- **Standalone version**: Check that your Gemini API key is correct in the HTML file
+- Make sure Node.js server is running (`npm start`)
+- Check that your Gemini API key is correct in `.env` file
 - Verify your Gemini API key is valid at https://aistudio.google.com/app/apikey
 
 ## Current Keyword Filters
