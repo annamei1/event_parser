@@ -24,14 +24,29 @@ AI-powered tool to automatically extract event information from emails and add t
 - Description
 - Registration/event URL
 
+## Quick Start
+
+**TL;DR Setup Checklist:**
+
+1. ✅ Install [Node.js](https://nodejs.org/) (v14+)
+2. ✅ Clone repo and run `npm install`
+3. ✅ Get [Gemini API key](https://aistudio.google.com/app/apikey) → add to `.env`
+4. ✅ Create [Google Cloud project](https://console.cloud.google.com/)
+5. ✅ Enable **Gmail API** and **Calendar API**
+6. ✅ Create **OAuth 2.0 Client ID** and add to `index.html`
+7. ✅ Add yourself as test user in OAuth consent screen
+8. ✅ Run `npm start` → open http://localhost:3000
+
+See detailed instructions below ⬇️
+
 ## Setup
 
 ### Prerequisites
 
-- **For server version** (`index.html`): Node.js (v14 or higher)
+- **For server version** (`index.html`): Node.js (v14 or higher) and npm
 - **For standalone version** (`standalone.html`): Just a web browser
-- Gemini API key from [Google AI Studio](https://aistudio.google.com/app/apikey)
-- **For Gmail integration**: OAuth 2.0 Client ID (see Gmail API Setup below)
+- **Gemini API key** from [Google AI Studio](https://aistudio.google.com/app/apikey) (free tier available)
+- **For Gmail integration**: Google Cloud project with Gmail API and Calendar API enabled + OAuth 2.0 Client ID (see setup below)
 
 ### Installation
 
@@ -41,23 +56,37 @@ git clone https://github.com/yourusername/event_parser.git
 cd event_parser
 ```
 
-2. Install dependencies:
+2. Install dependencies (this will install Express, CORS, and other required packages):
 ```bash
 npm install
 ```
+
+**Dependencies installed:**
+- `express` - Web server framework
+- `cors` - Enable cross-origin requests
+- `chrono-node` - Natural language date parsing
+- `dotenv` - Environment variable management
+- `nodemon` - Auto-restart server during development (dev dependency)
 
 3. Create a `.env` file from the example:
 ```bash
 cp .env.example .env
 ```
 
-4. Add your Gemini API key to `.env`:
+4. **Get your Gemini API key**:
+   - Go to [Google AI Studio](https://aistudio.google.com/app/apikey)
+   - Click "Create API Key"
+   - Copy the key
+
+5. Add your Gemini API key to `.env`:
 ```
-GEMINI_API_KEY=your_api_key_here
+GEMINI_API_KEY=your_actual_api_key_here
 PORT=3000
 ```
 
-### Gmail API Setup (Required for Email Fetching)
+**⚠️ Important**: Never commit your `.env` file to git. It's already in `.gitignore`.
+
+### Google API Setup (Required for Gmail & Calendar Integration)
 
 1. **Go to Google Cloud Console**: https://console.cloud.google.com/
 
@@ -65,10 +94,10 @@ PORT=3000
    - Click "Select a project" → "New Project"
    - Name it "Event Parser" → Click "Create"
 
-3. **Enable Gmail API**:
+3. **Enable Required APIs**:
    - Go to "APIs & Services" → "Library"
-   - Search for "Gmail API"
-   - Click "Enable"
+   - Search for **"Gmail API"** → Click "Enable"
+   - Search for **"Google Calendar API"** → Click "Enable"
 
 4. **Create OAuth credentials**:
    - Go to "APIs & Services" → "Credentials"
@@ -80,8 +109,11 @@ PORT=3000
    - User support email: your email
    - Developer contact: your email
    - Save and Continue (skip optional fields)
-   - **Add scope**: `https://www.googleapis.com/auth/gmail.modify`
-   - Add your email as test user
+   - **Add scopes** (click "Add or Remove Scopes"):
+     - `https://www.googleapis.com/auth/gmail.modify` (Read, compose, send, and permanently delete all your email from Gmail)
+     - `https://www.googleapis.com/auth/calendar.events` (View and edit events on all your calendars)
+   - Click "Update" → "Save and Continue"
+   - **Add test users**: Add your email address (the one you'll sign in with)
    - Save and return to Credentials
 
 6. **Create OAuth 2.0 Client ID**:
@@ -104,8 +136,12 @@ PORT=3000
 9. **Copy your Client ID** (looks like: `xxxxx.apps.googleusercontent.com`)
 
 10. **Add to your HTML files**:
-    - For server version: Update `GOOGLE_CLIENT_ID` in `index.html` (line 49)
-    - For standalone: Update `GOOGLE_CLIENT_ID` in `standalone.html` (line 68)
+    - For server version: Update `GOOGLE_CLIENT_ID` in `index.html` (line 108)
+    - For standalone: Update `GOOGLE_CLIENT_ID` in `standalone.html` (if using standalone version)
+
+    ```javascript
+    const GOOGLE_CLIENT_ID = 'YOUR_CLIENT_ID_HERE.apps.googleusercontent.com';
+    ```
 
 ### Running the Application
 
@@ -232,10 +268,16 @@ event_parser/
 ## Security
 
 ### Server Version (`index.html`)
-- API keys are stored in `.env` file (never committed to git)
+- **Gemini API key** is stored in `.env` file (never committed to git)
 - Backend proxy prevents key exposure in client-side code
 - CORS enabled for local development
-- OAuth Client ID is public (normal for OAuth)
+- **OAuth Client ID** is public and safe to commit (it's meant to be visible in browser code - the secret is handled by Google's OAuth flow)
+
+### Important Notes
+- ⚠️ **Never commit your `.env` file** - it contains your Gemini API key
+- ✅ **OAuth Client ID in `index.html` is safe** - this is public by design
+- ✅ **No OAuth Client Secret** - we use the implicit grant flow which doesn't require a secret
+- 🔒 Users must authorize the app to access their Gmail/Calendar data
 
 ### Standalone Version (`standalone.html`)
 - Gemini API key is visible in HTML source code (acceptable for personal use)
