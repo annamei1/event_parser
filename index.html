@@ -198,6 +198,57 @@
     // Track event IDs that have been added to Google Calendar
     let addedEventIds = new Set(JSON.parse(localStorage.getItem('addedEventIds') || '[]'));
 
+    // --- Server persistence helpers ---
+    async function saveStateToServer() {
+      localStorage.setItem('extractedEvents', JSON.stringify(allEvents));
+      localStorage.setItem('processedEmailIds', JSON.stringify([...processedEmailIds]));
+      localStorage.setItem('processedCmsaEventIds', JSON.stringify([...processedCmsaEventIds]));
+      localStorage.setItem('addedEventIds', JSON.stringify([...addedEventIds]));
+      try {
+        await fetch('/api/state', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            extractedEvents: allEvents,
+            processedEmailIds: [...processedEmailIds],
+            processedCmsaEventIds: [...processedCmsaEventIds],
+            addedEventIds: [...addedEventIds],
+          }),
+        });
+      } catch (err) {
+        console.error('Failed to save state to server:', err);
+      }
+    }
+
+    async function loadStateFromServer() {
+      try {
+        const res = await fetch('/api/state');
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const state = await res.json();
+
+        const serverHasData = (state.extractedEvents || []).length > 0 ||
+                              (state.processedEmailIds || []).length > 0;
+
+        if (serverHasData) {
+          allEvents = state.extractedEvents || [];
+          processedEmailIds = new Set(state.processedEmailIds || []);
+          processedCmsaEventIds = new Set(state.processedCmsaEventIds || []);
+          addedEventIds = new Set(state.addedEventIds || []);
+          localStorage.setItem('extractedEvents', JSON.stringify(allEvents));
+          localStorage.setItem('processedEmailIds', JSON.stringify([...processedEmailIds]));
+          localStorage.setItem('processedCmsaEventIds', JSON.stringify([...processedCmsaEventIds]));
+          localStorage.setItem('addedEventIds', JSON.stringify([...addedEventIds]));
+        } else if (allEvents.length > 0 || processedEmailIds.size > 0) {
+          // Server is empty but localStorage has data — migrate to server
+          console.log('Migrating localStorage state to server');
+          await saveStateToServer();
+        }
+        console.log('State synced with server');
+      } catch (err) {
+        console.warn('Could not load state from server, using localStorage:', err.message);
+      }
+    }
+
     // Restore saved access token
     function restoreSavedToken() {
       const savedToken = localStorage.getItem('gmailAccessToken');
@@ -486,7 +537,7 @@
 
       // Mark all as processed upfront so they're never re-sent even if dismissed
       emails.forEach(email => processedEmailIds.add(email.id));
-      localStorage.setItem('processedEmailIds', JSON.stringify([...processedEmailIds]));
+      saveStateToServer();
 
       // Process all emails with Gemini
       for (let c = 0; c < emails.length; c += GEMINI_BATCH_SIZE) {
@@ -609,7 +660,7 @@
     if (typeof google !== 'undefined') {
       gisLoaded();
     }
-    window.addEventListener('load', () => {
+    window.addEventListener('load', async () => {
       if (typeof gapi !== 'undefined') gapiLoaded();
       if (typeof google !== 'undefined') {
         gisLoaded();
@@ -622,7 +673,8 @@
           tokenClient.requestAccessToken({ prompt: 'none' });
         }
       }
-      // Display stored events on load
+      // Load state from server (source of truth), falling back to localStorage
+      await loadStateFromServer();
       displayAllEvents();
     });
 
@@ -759,8 +811,8 @@
           }
         });
 
-        // Save to localStorage
-        localStorage.setItem('extractedEvents', JSON.stringify(allEvents));
+        // Save to server and localStorage
+        saveStateToServer();
 
         if (!silent) {
           displayAllEvents();
@@ -834,6 +886,7 @@
       const now = new Date();
 
       // Clean up addedEventIds - remove events that have passed
+      const sizeBefore = addedEventIds.size;
       addedEventIds.forEach(eventId => {
         const event = allEvents.find(e => String(e.id) === String(eventId));
         if (event) {
@@ -843,7 +896,9 @@
           }
         }
       });
-      localStorage.setItem('addedEventIds', JSON.stringify([...addedEventIds]));
+      if (addedEventIds.size !== sizeBefore) {
+        saveStateToServer();
+      }
 
       // Filter out events that have been added to calendar
       const displayEvents = allEvents.filter(event =>
@@ -1068,7 +1123,7 @@
             }
           });
           addedEventIds.add(String(event.id));
-          localStorage.setItem('addedEventIds', JSON.stringify([...addedEventIds]));
+          saveStateToServer();
           displayAllEvents(); // Refresh to remove event from list
         } catch (err) {
           if (btn) { btn.disabled = false; btn.innerHTML = '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="18" rx="2" ry="2"></rect><line x1="16" y1="2" x2="16" y2="6"></line><line x1="8" y1="2" x2="8" y2="6"></line><line x1="3" y1="10" x2="21" y2="10"></line></svg> Add to Calendar'; }
@@ -1140,9 +1195,8 @@
     // Dismiss event
     window.dismissEvent = function(eventId) {
       allEvents = allEvents.filter(e => e.id != eventId);
-      localStorage.setItem('extractedEvents', JSON.stringify(allEvents));
       addedEventIds.delete(String(eventId));
-      localStorage.setItem('addedEventIds', JSON.stringify([...addedEventIds]));
+      saveStateToServer();
       document.getElementById(`event-${eventId}`)?.remove();
       displayAllEvents();
     };
@@ -1224,11 +1278,8 @@
           processedCmsaEventIds.add(event.id);
         });
 
-        // Persist processed CMSA IDs
-        localStorage.setItem('processedCmsaEventIds', JSON.stringify([...processedCmsaEventIds]));
-
-        // Save to localStorage
-        localStorage.setItem('extractedEvents', JSON.stringify(allEvents));
+        // Persist state to server
+        saveStateToServer();
 
         // Save last fetched timestamp
         localStorage.setItem('cmsaLastFetched', Date.now().toString());
@@ -1248,13 +1299,10 @@
     window.clearAllEvents = function() {
       if (confirm('Are you sure you want to clear all events?')) {
         allEvents = [];
-        localStorage.setItem('extractedEvents', JSON.stringify(allEvents));
         addedEventIds.clear();
-        localStorage.removeItem('addedEventIds');
         processedEmailIds.clear();
-        localStorage.removeItem('processedEmailIds');
         processedCmsaEventIds.clear();
-        localStorage.removeItem('processedCmsaEventIds');
+        saveStateToServer();
         displayAllEvents();
       }
     };

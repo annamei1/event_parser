@@ -23,5 +23,8 @@ Thumbs.db
 # Optional eslint cache
 .eslintcache
 
+# Persisted app state (personal data)
+data/
+
 # Claude Code project files
 .claude/

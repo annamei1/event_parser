@@ -2,6 +2,8 @@ const express = require('express');
 const cors = require('cors');
 const chrono = require('chrono-node');
 const ical = require('node-ical');
+const fs = require('fs');
+const path = require('path');
 require('dotenv').config();
 
 const app = express();
@@ -9,8 +11,74 @@ const PORT = process.env.PORT || 3000;
 
 // Middleware
 app.use(cors());
-app.use(express.json());
+app.use(express.json({ limit: '5mb' }));
 app.use(express.static('.')); // Serve static files (index.html)
+
+// --- Persistence: JSON file for app state ---
+const DATA_DIR = path.join(__dirname, 'data');
+const STATE_FILE = path.join(DATA_DIR, 'state.json');
+
+const DEFAULT_STATE = {
+  extractedEvents: [],
+  processedEmailIds: [],
+  processedCmsaEventIds: [],
+  addedEventIds: [],
+};
+
+function ensureDataDir() {
+  if (!fs.existsSync(DATA_DIR)) {
+    fs.mkdirSync(DATA_DIR, { recursive: true });
+  }
+}
+
+function readState() {
+  ensureDataDir();
+  if (!fs.existsSync(STATE_FILE)) {
+    return { ...DEFAULT_STATE };
+  }
+  try {
+    const raw = fs.readFileSync(STATE_FILE, 'utf8');
+    return { ...DEFAULT_STATE, ...JSON.parse(raw) };
+  } catch (err) {
+    console.error('Failed to read state file:', err.message);
+    return { ...DEFAULT_STATE };
+  }
+}
+
+function writeState(state) {
+  ensureDataDir();
+  const sanitized = {
+    extractedEvents: Array.isArray(state.extractedEvents) ? state.extractedEvents : [],
+    processedEmailIds: Array.isArray(state.processedEmailIds) ? state.processedEmailIds : [],
+    processedCmsaEventIds: Array.isArray(state.processedCmsaEventIds) ? state.processedCmsaEventIds : [],
+    addedEventIds: Array.isArray(state.addedEventIds) ? state.addedEventIds : [],
+  };
+  fs.writeFileSync(STATE_FILE, JSON.stringify(sanitized, null, 2), 'utf8');
+}
+
+// Load persisted state
+app.get('/api/state', (req, res) => {
+  try {
+    res.json(readState());
+  } catch (err) {
+    console.error('Error reading state:', err);
+    res.status(500).json({ error: 'Failed to read state' });
+  }
+});
+
+// Save state (full snapshot)
+app.post('/api/state', (req, res) => {
+  try {
+    if (!req.body || typeof req.body !== 'object') {
+      return res.status(400).json({ error: 'Request body must be a JSON object' });
+    }
+    writeState(req.body);
+    res.json({ ok: true });
+  } catch (err) {
+    console.error('Error writing state:', err);
+    res.status(500).json({ error: 'Failed to save state' });
+  }
+});
 
 // Fetch a URL server-side (avoids CORS) and return its text content
 app.post('/api/fetch-url', async (req, res) => {
